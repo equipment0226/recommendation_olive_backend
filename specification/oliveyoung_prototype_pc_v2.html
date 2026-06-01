@@ -1,0 +1,833 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>올리브영 장바구니 클렌징 — PC 데모</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&display=swap');
+  :root {
+    --olive:#1A3A2A; --olive-mid:#2D5C3F; --olive-light:#4a8c5c;
+    --sage:#8ab89a; --sage-pale:#e8f2ec;
+    --teal:#0F6E56; --pink:#C4697A; --pink-light:#fce8ec;
+    --amber:#B07A2A; --amber-light:#fef3e2;
+    --coral:#B85A3A; --coral-light:#fdeee9;
+    --purple:#6A4A9A; --purple-light:#f0eaf8;
+    --gray:#64748B; --gray-light:#f8f9fa;
+    --border:#e2e8f0; --text:#1e293b; --text-soft:#64748b;
+    --white:#ffffff; --radius:12px;
+    --shadow:0 2px 16px rgba(0,0,0,0.08);
+    --shadow-lg:0 8px 32px rgba(0,0,0,0.12);
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  body{font-family:'Noto Sans KR',sans-serif;background:#f0f3f1;min-height:100vh;color:var(--text);}
+
+  /* GNB */
+  .gnb{background:var(--white);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:200;box-shadow:0 1px 8px rgba(0,0,0,0.06);}
+  .gnb-inner{max-width:1200px;margin:0 auto;padding:0 32px;display:flex;align-items:center;gap:24px;height:56px;}
+  .gnb-logo{font-size:20px;font-weight:700;color:var(--olive);letter-spacing:-0.5px;cursor:pointer;white-space:nowrap;}
+  .gnb-logo span{color:var(--olive-light);}
+  .gnb-nav{display:flex;gap:20px;flex:1;}
+  .gnb-nav a{font-size:13px;color:var(--text-soft);text-decoration:none;cursor:pointer;padding:4px 0;border-bottom:2px solid transparent;transition:all .2s;}
+  .gnb-nav a:hover{color:var(--olive);}
+  .gnb-nav a.active{color:var(--olive);border-bottom-color:var(--olive);font-weight:600;}
+
+  /* 유저 선택 드롭박스 */
+  .user-selector-wrap{display:flex;align-items:center;gap:10px;padding:0 6px 0 10px;border-left:1px solid var(--border);}
+  .user-selector-label{font-size:12px;color:var(--text-soft);white-space:nowrap;}
+  .user-selector{
+    appearance:none;-webkit-appearance:none;
+    background:var(--sage-pale);
+    border:1.5px solid var(--sage);
+    border-radius:8px;
+    padding:6px 32px 6px 12px;
+    font-size:13px;font-weight:600;
+    color:var(--olive);
+    cursor:pointer;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%234a8c5c' stroke-width='1.8' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+    background-repeat:no-repeat;
+    background-position:right 10px center;
+    min-width:160px;
+    font-family:'Noto Sans KR',sans-serif;
+    transition:border-color .2s,box-shadow .2s;
+  }
+  .user-selector:focus{outline:none;border-color:var(--olive);box-shadow:0 0 0 3px rgba(26,58,42,0.12);}
+  .user-avatar{width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:15px;background:var(--sage-pale);border:1.5px solid var(--sage);flex-shrink:0;}
+  .gnb-cart-btn{display:flex;align-items:center;gap:6px;padding:7px 14px;background:var(--olive);color:white;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;border:none;white-space:nowrap;font-family:'Noto Sans KR',sans-serif;}
+
+  /* 유저 배너 */
+  .user-banner{background:linear-gradient(135deg,var(--olive) 0%,var(--olive-mid) 100%);padding:20px 32px;margin-bottom:0;}
+  .user-banner-inner{max-width:1200px;margin:0 auto;display:flex;align-items:center;gap:16px;}
+  .user-banner-avatar{width:48px;height:48px;border-radius:50%;background:rgba(255,255,255,0.15);display:flex;align-items:center;justify-content:center;font-size:24px;flex-shrink:0;}
+  .user-banner-name{font-size:20px;font-weight:700;color:white;}
+  .user-banner-info{font-size:13px;color:rgba(255,255,255,0.75);margin-top:3px;}
+  .user-banner-tags{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap;}
+  .user-tag{background:rgba(255,255,255,0.15);color:white;border-radius:20px;padding:2px 10px;font-size:11px;font-weight:500;}
+
+  /* 레이아웃 */
+  .layout{max-width:1200px;margin:0 auto;padding:28px 32px 80px;}
+  .two-col{display:grid;grid-template-columns:1fr 340px;gap:24px;align-items:start;}
+  .three-col{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;}
+
+  /* 스텝 헤더 */
+  .step-header{background:var(--white);border-radius:16px;padding:24px 28px;margin-bottom:24px;box-shadow:var(--shadow);display:flex;align-items:center;justify-content:space-between;}
+  .step-kicker{font-size:12px;font-weight:600;color:var(--olive-light);letter-spacing:.08em;text-transform:uppercase;margin-bottom:5px;}
+  .step-title{font-size:22px;font-weight:700;color:var(--text);}
+  .step-desc{font-size:13px;color:var(--text-soft);margin-top:3px;}
+  .step-progress{display:flex;align-items:center;}
+  .step-node{display:flex;flex-direction:column;align-items:center;gap:5px;cursor:pointer;}
+  .step-circle{width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;transition:all .3s;}
+  .step-circle.done{background:var(--olive);color:white;}
+  .step-circle.active{background:var(--olive);color:white;box-shadow:0 0 0 4px rgba(26,58,42,0.15);}
+  .step-circle.inactive{background:var(--border);color:var(--text-soft);}
+  .step-node-label{font-size:11px;color:var(--text-soft);white-space:nowrap;}
+  .step-connector{width:56px;height:2px;background:var(--border);margin-bottom:18px;transition:background .3s;}
+  .step-connector.done{background:var(--olive);}
+
+  /* 카드 */
+  .card{background:var(--white);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;box-shadow:var(--shadow);}
+  .card-head{padding:14px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;}
+  .card-head-title{font-size:15px;font-weight:700;color:var(--text);}
+  .card-head-sub{font-size:12px;color:var(--text-soft);margin-top:2px;}
+
+  /* 통계 카드 */
+  .stat-card{background:var(--white);border-radius:var(--radius);padding:20px 22px;box-shadow:var(--shadow);border:1px solid var(--border);display:flex;align-items:center;gap:14px;}
+  .stat-icon{width:46px;height:46px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0;}
+  .stat-num{font-size:26px;font-weight:700;line-height:1;}
+  .stat-label{font-size:12px;color:var(--text-soft);margin-top:3px;}
+
+  /* 배지 */
+  .badge{display:inline-flex;align-items:center;gap:3px;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:500;line-height:1.4;}
+  .badge-충동{background:var(--pink-light);color:var(--pink);}
+  .badge-고민{background:#e1f5ee;color:var(--teal);}
+  .badge-보관{background:var(--amber-light);color:var(--amber);}
+  .badge-시즌{background:var(--purple-light);color:var(--purple);}
+  .badge-해결{background:var(--coral-light);color:var(--coral);}
+
+  /* 상품 행 */
+  .product-row{display:flex;gap:14px;align-items:flex-start;padding:14px 20px;border-bottom:1px solid var(--border);transition:background .15s;cursor:pointer;}
+  .product-row:last-child{border-bottom:none;}
+  .product-row:hover{background:var(--gray-light);}
+  .product-thumb{width:64px;height:64px;border-radius:10px;background:var(--sage-pale);display:flex;align-items:center;justify-content:center;font-size:28px;flex-shrink:0;}
+  .product-info{flex:1;min-width:0;}
+  .product-name{font-size:13px;font-weight:500;color:var(--text);line-height:1.4;margin-bottom:3px;}
+  .product-meta{font-size:11px;color:var(--text-soft);margin-bottom:5px;}
+  .product-price{font-size:14px;font-weight:700;color:var(--text);}
+
+  /* 이유 박스 */
+  .reason-box{margin:0 20px 12px;padding:10px 14px;border-radius:8px;font-size:12px;line-height:1.6;}
+  .reason-box.충동{background:var(--pink-light);color:#7a2040;border-left:3px solid var(--pink);}
+  .reason-box.해결{background:var(--coral-light);color:#6a2010;border-left:3px solid var(--coral);}
+  .reason-box.시즌{background:var(--purple-light);color:#3c2060;border-left:3px solid var(--purple);}
+
+  /* 체크 */
+  .check-circle{width:22px;height:22px;border-radius:50%;border:2px solid var(--border);flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:all .2s;margin-top:4px;}
+  .check-circle.checked{background:var(--coral);border-color:var(--coral);}
+  .check-circle.checked::after{content:'✓';color:white;font-size:12px;font-weight:700;}
+
+  /* 유지 상품 */
+  .keep-row{display:flex;gap:12px;align-items:center;padding:11px 20px;border-bottom:1px solid var(--border);opacity:.7;}
+  .keep-row:last-child{border-bottom:none;}
+  .keep-thumb{width:48px;height:48px;border-radius:8px;background:var(--sage-pale);display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0;}
+
+  /* 버튼 */
+  .btn{padding:10px 18px;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;transition:all .2s;font-family:'Noto Sans KR',sans-serif;display:inline-flex;align-items:center;gap:5px;}
+  .btn-primary{background:var(--olive);color:white;}
+  .btn-primary:hover{background:var(--olive-mid);}
+  .btn-secondary{background:var(--sage-pale);color:var(--olive);border:1.5px solid var(--sage);}
+  .btn-outline{background:white;color:var(--text);border:1.5px solid var(--border);}
+  .btn-outline:hover{border-color:var(--olive);color:var(--olive);}
+  .btn-sm{padding:5px 11px;font-size:11px;}
+  .btn-lg{padding:13px 24px;font-size:14px;}
+  .btn-full{width:100%;justify-content:center;}
+
+  /* 사이드바 */
+  .sidebar{background:var(--white);border-radius:var(--radius);box-shadow:var(--shadow);border:1px solid var(--border);position:sticky;top:76px;overflow:hidden;}
+  .sidebar-head{background:var(--olive);padding:14px 18px;color:white;}
+  .sidebar-head-title{font-size:14px;font-weight:700;}
+  .sidebar-head-sub{font-size:11px;color:var(--sage);margin-top:2px;}
+  .sidebar-row{display:flex;align-items:center;justify-content:space-between;padding:9px 18px;border-bottom:1px solid var(--border);font-size:12px;}
+  .sidebar-row:last-child{border-bottom:none;}
+  .sidebar-row-label{color:var(--text-soft);}
+  .sidebar-row-val{font-weight:600;color:var(--text);}
+  .sidebar-footer{padding:12px 18px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:8px;}
+
+  /* 추천 메시지 카드 */
+  .rec-card{background:var(--white);border:1.5px solid var(--border);border-radius:var(--radius);padding:16px 18px;cursor:pointer;transition:all .2s;display:flex;gap:12px;align-items:flex-start;box-shadow:var(--shadow);}
+  .rec-card:hover{border-color:var(--olive);box-shadow:var(--shadow-lg);transform:translateY(-2px);}
+  .rec-card.selected{border-color:var(--olive);background:var(--sage-pale);}
+  .rec-icon{width:40px;height:40px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0;}
+  .rec-title{font-size:13px;font-weight:600;color:var(--text);margin-bottom:3px;}
+  .rec-desc{font-size:11px;color:var(--text-soft);line-height:1.5;}
+  .rec-algo{font-size:10px;color:var(--olive);font-weight:600;margin-top:5px;padding:2px 7px;background:var(--sage-pale);border-radius:20px;display:inline-block;}
+  .rec-arrow{font-size:16px;color:var(--text-soft);flex-shrink:0;margin-top:2px;}
+
+  /* 추천 상품 그리드 */
+  .rec-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;}
+  .rec-product{background:var(--white);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;cursor:pointer;transition:all .2s;box-shadow:var(--shadow);}
+  .rec-product:hover{box-shadow:var(--shadow-lg);transform:translateY(-3px);}
+  .rec-product-img{height:110px;background:var(--sage-pale);display:flex;align-items:center;justify-content:center;font-size:40px;}
+  .rec-product-body{padding:10px 12px;}
+  .rec-product-name{font-size:12px;font-weight:500;color:var(--text);line-height:1.4;margin-bottom:5px;}
+  .rec-product-price{font-size:14px;font-weight:700;color:var(--olive);}
+  .rec-product-tag{display:inline-block;margin-top:4px;font-size:10px;background:var(--sage-pale);color:var(--teal);padding:2px 6px;border-radius:20px;font-weight:500;}
+
+  /* 완료 */
+  .done-banner{background:linear-gradient(135deg,var(--olive) 0%,var(--olive-mid) 100%);border-radius:16px;padding:40px 48px;color:white;display:flex;gap:32px;align-items:center;margin-bottom:24px;box-shadow:var(--shadow-lg);}
+  .done-icon-big{font-size:72px;flex-shrink:0;}
+  .done-title{font-size:26px;font-weight:700;margin-bottom:10px;}
+  .done-desc{font-size:14px;color:rgba(255,255,255,.8);line-height:1.8;}
+
+  /* 스크린 */
+  .screen{display:none;}
+  .screen.active{display:block;animation:fadeIn .3s ease;}
+  @keyframes fadeIn{from{opacity:0;transform:translateY(8px);}to{opacity:1;transform:translateY(0);}}
+
+  /* 인포 배너 */
+  .info-banner{padding:10px 14px;border-radius:8px;font-size:12px;line-height:1.6;margin-bottom:10px;}
+  .info-banner.green{background:var(--sage-pale);color:#0d4a35;border-left:3px solid var(--teal);}
+  .info-banner.coral{background:var(--coral-light);color:#6a2010;border-left:3px solid var(--coral);}
+
+  /* 토스트 */
+  .toast{position:fixed;bottom:28px;left:50%;transform:translateX(-50%) translateY(20px);background:rgba(26,58,42,.92);color:white;padding:10px 22px;border-radius:24px;font-size:13px;font-weight:500;opacity:0;transition:all .3s;white-space:nowrap;z-index:999;pointer-events:none;box-shadow:var(--shadow-lg);}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+
+  /* 유저 선택 변경 시 fade */
+  .user-fade{animation:fadeIn .4s ease;}
+</style>
+</head>
+<body>
+
+<!-- ── GNB ── -->
+<nav class="gnb">
+  <div class="gnb-inner">
+    <div class="gnb-logo">olive<span>young</span></div>
+    <div class="gnb-nav">
+      <a href="#">브랜드</a>
+      <a href="#">카테고리</a>
+      <a href="#">세일</a>
+      <a href="#" class="active">장바구니 분석</a>
+      <a href="#">MY</a>
+    </div>
+    <!-- 유저 선택 드롭박스 -->
+    <div class="user-selector-wrap">
+      <span class="user-selector-label">👤 데모 유저</span>
+      <select class="user-selector" id="userSelect" onchange="switchUser(this.value)">
+        <option value="0">김민선 — 지성·트러블</option>
+        <option value="1">이지현 — 건성·보습</option>
+        <option value="2">박준호 — 복합·뷰티 입문</option>
+      </select>
+    </div>
+    <button class="gnb-cart-btn" id="gnb-cart-btn">🛒 장바구니 7</button>
+  </div>
+</nav>
+
+<!-- ── 유저 배너 ── -->
+<div class="user-banner">
+  <div class="user-banner-inner">
+    <div class="user-banner-avatar" id="banner-avatar">🌿</div>
+    <div>
+      <div class="user-banner-name" id="banner-name">김민선님의 장바구니</div>
+      <div class="user-banner-info" id="banner-info">지성 · 트러블, 미백 고민 · 20대</div>
+      <div class="user-banner-tags" id="banner-tags">
+        <span class="user-tag">지성 피부</span>
+        <span class="user-tag">트러블 케어</span>
+        <span class="user-tag">미백</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── 레이아웃 ── -->
+<div class="layout">
+
+  <!-- 스텝 헤더 -->
+  <div class="step-header">
+    <div>
+      <div class="step-kicker" id="step-kicker">STEP 1 OF 3</div>
+      <div class="step-title" id="step-title">장바구니 현황 분석</div>
+      <div class="step-desc" id="step-desc"></div>
+    </div>
+    <div class="step-progress">
+      <div class="step-node" onclick="goStep(1)">
+        <div class="step-circle active" id="dot1">1</div>
+        <span class="step-node-label">현황</span>
+      </div>
+      <div class="step-connector" id="line1"></div>
+      <div class="step-node" onclick="currentStep>=2&&goStep(2)">
+        <div class="step-circle inactive" id="dot2">2</div>
+        <span class="step-node-label">클렌징</span>
+      </div>
+      <div class="step-connector" id="line2"></div>
+      <div class="step-node" onclick="currentStep>=3&&goStep(3)">
+        <div class="step-circle inactive" id="dot3">3</div>
+        <span class="step-node-label">추천</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 스크린들 -->
+  <div class="screen active" id="screen1"><div id="s1-content"></div></div>
+  <div class="screen" id="screen2"><div id="s2-content"></div></div>
+  <div class="screen" id="screen3"><div id="s3-content"></div></div>
+  <div class="screen" id="screendone"><div id="done-content"></div></div>
+
+</div><!-- /layout -->
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ════════════════════════════════════════
+// 유저 페르소나 데이터
+// ════════════════════════════════════════
+const USERS = [
+  {
+    id: 0,
+    name: '김민선',
+    avatar: '🌿',
+    skinType: '지성 피부',
+    concerns: ['트러블 케어', '미백'],
+    age: '20대',
+    totalItems: 7,
+    avgDays: 52,
+    cleansingCount: 4,
+    // 클렌징 대상 상품
+    cleansingItems: [
+      {
+        id:'c0',type:'충동',emoji:'🧴',
+        name:'이니스프리 그린티 수분크림 50ml',
+        meta:'담은 지 78일 · 3월 기획전 유입 · 재조회 0회',
+        price:'₩18,000',
+        reason:'3월 기획전 배너 클릭으로 담으셨어요. 현재 쓰시는 수분크림과 히알루론산 성분이 겹치고, 담은 후 재조회가 없어요.',
+        defaultChecked: true
+      },
+      {
+        id:'c1',type:'충동',emoji:'💄',
+        name:'롬앤 글라스팅 워터틴트 #18',
+        meta:'담은 지 65일 · 추천 배너 유입 · 검색 이력 없음',
+        price:'₩9,800',
+        reason:'검색 없이 추천 배너에서 담으셨어요. 립 카테고리 구매 이력이 없어서 실제 필요한지 확인이 어려워요.',
+        defaultChecked: true
+      },
+      {
+        id:'c2',type:'해결',emoji:'🧖',
+        name:'닥터지 레드 블레미쉬 세럼',
+        meta:'담은 지 42일',
+        price:'₩28,000',
+        reason:'담으신 후 같은 트러블 케어 카테고리의 COSRX 세럼을 구매하셨어요. 이미 비슷한 니즈가 해결됐어요.',
+        defaultChecked: true
+      },
+      {
+        id:'c3',type:'시즌',emoji:'🫙',
+        name:'겨울 집중 보습 오일 세럼 100ml',
+        meta:'담은 지 90일 · 겨울 전용 오일 제형',
+        price:'₩34,000',
+        reason:'겨울용 고점도 오일 세럼인데 지금은 봄이에요. 지금 사면 가을 전까지 쓰기 어려워요.',
+        defaultChecked: false
+      }
+    ],
+    // 유지 상품
+    keepItems: [
+      {emoji:'🌿',name:'라네즈 워터뱅크 하이드로 에센스 70ml',type:'고민',meta:'담은 지 38일 · 재검색 3회',price:'₩29,000'},
+      {emoji:'✨',name:'아누아 어성초 77 토너패드 130매',type:'고민',meta:'담은 지 29일 · 재방문 2회',price:'₩18,000'},
+      {emoji:'🫧',name:'세타필 젠틀 스킨 클렌저 250ml',type:'보관',meta:'반복 구매 3회 · 재구매 타이밍',price:'₩13,500'}
+    ],
+    // 추천 옵션
+    recOptions: [
+      {id:'r0',icon:'👥',bg:'#e8f2ec',title:'나와 비슷한 고객이 결국 뭘 샀는지 알려줄까요?',desc:'같은 트러블 고민 유저 382명의 선택이에요',algo:'Collaborative Filtering',
+       result:{title:'비슷한 피부 고민 유저의 선택',sub:'트러블 케어 + 지성 피부 382명 기준',
+        items:[{e:'🌿',n:'아누아 어성초 폼클렌저',p:'₩15,000',t:'구매율 68%'},{e:'💧',n:'COSRX 저자극 앰플',p:'₩22,000',t:'구매율 61%'},{e:'🌊',n:'토리든 다이브인 세럼',p:'₩29,000',t:'구매율 54%'},{e:'✨',n:'일리윤 세라마이드 크림',p:'₩19,800',t:'구매율 48%'}]}},
+      {id:'r1',icon:'📈',bg:'#fef3e2',title:'요즘 트러블 케어 카테고리 트렌드 알려줄까요?',desc:'최근 검색량 급상승 성분 기반 상품이에요',algo:'트렌드 기반 추천',
+       result:{title:'트러블 케어 트렌드 상품',sub:'최근 검색량 상승 성분 포함',
+        items:[{e:'🔬',n:'펩타이드 진정 세럼',p:'₩34,000',t:'↑82%'},{e:'🌿',n:'티트리 진정 앰플',p:'₩19,000',t:'↑74%'},{e:'💊',n:'나이아신아마이드 크림',p:'₩24,000',t:'↑68%'},{e:'🧬',n:'BHA 각질 토너패드',p:'₩18,000',t:'↑55%'}]}},
+      {id:'r2',icon:'🔍',bg:'#fce8ec',title:'최근 검색하신 키워드 기반으로 골라드릴까요?',desc:'"저자극 세럼" 검색 후 많이 산 상품이에요',algo:'검색 의도 기반 추천',
+       result:{title:'"저자극 세럼" 검색 기반',sub:'같은 키워드 검색 후 구매 전환율 높은 상품',
+        items:[{e:'🌸',n:'닥터지 브라이트닝 세럼',p:'₩26,000',t:'전환율 72%'},{e:'🫧',n:'바이오더마 센시비오',p:'₩31,000',t:'전환율 65%'},{e:'🌱',n:'에스트라 아토베리어',p:'₩24,000',t:'전환율 58%'},{e:'💫',n:'유리아쥬 이소유브',p:'₩28,000',t:'전환율 51%'}]}}
+    ]
+  },
+  {
+    id: 1,
+    name: '이지현',
+    avatar: '💧',
+    skinType: '건성 피부',
+    concerns: ['보습', '장벽 강화'],
+    age: '30대',
+    totalItems: 5,
+    avgDays: 38,
+    cleansingCount: 2,
+    cleansingItems: [
+      {
+        id:'c0',type:'충동',emoji:'☀️',
+        name:'라네즈 워터슬리핑 마스크 70ml',
+        meta:'담은 지 55일 · 메인 배너 유입 · 재조회 없음',
+        price:'₩29,000',
+        reason:'메인 배너 클릭으로 담으셨어요. 슬리핑 마스크 카테고리 구매 이력이 없고, 담은 후 재조회도 없어요.',
+        defaultChecked: true
+      },
+      {
+        id:'c1',type:'해결',emoji:'🧴',
+        name:'피지오겔 AI 크림 100ml',
+        meta:'담은 지 33일',
+        price:'₩22,000',
+        reason:'담으신 후 더 큰 용량(150ml)의 피지오겔 크림을 구매하셨어요. 이미 보습 니즈가 해결됐어요.',
+        defaultChecked: true
+      }
+    ],
+    keepItems: [
+      {emoji:'💦',name:'세타필 모이스처라이징 로션',type:'보관',meta:'반복 구매 4회 · 소진 임박',price:'₩19,500'},
+      {emoji:'🌊',name:'토리든 다이브인 세럼 50ml',type:'고민',meta:'담은 지 22일 · 재검색 4회',price:'₩29,000'},
+      {emoji:'✨',name:'마데카솔 크림 30g',type:'고민',meta:'담은 지 40일 · 재방문 3회',price:'₩14,800'}
+    ],
+    recOptions: [
+      {id:'r0',icon:'👥',bg:'#e8f2ec',title:'나와 비슷한 고객이 담은 보습 루틴 알려줄까요?',desc:'같은 건성·장벽 고민 유저 218명의 선택이에요',algo:'Collaborative Filtering',
+       result:{title:'건성 피부 보습 루틴 추천',sub:'건성 + 장벽 강화 고민 218명 기준',
+        items:[{e:'🫧',n:'라운드랩 자작나무 수분크림',p:'₩16,800',t:'구매율 71%'},{e:'💎',n:'달바 화이트 트뤼플 세럼',p:'₩32,000',t:'구매율 63%'},{e:'🌿',n:'에스트라 아토베리어 크림',p:'₩24,000',t:'구매율 58%'},{e:'💧',n:'아이소이 에센스',p:'₩28,000',t:'구매율 49%'}]}},
+      {id:'r1',icon:'🔄',bg:'#fef3e2',title:'세타필 로션 슬슬 떨어질 때 됐어요',desc:'반복 구매 주기 기준으로 지금이 딱 타이밍이에요',algo:'소진 리마인드 · 확장 ①',
+       result:{title:'세타필 재구매 타이밍',sub:'반복 구매 주기 기준 · 소진 리마인드',
+        items:[{e:'💦',n:'세타필 모이스처라이징 로션',p:'₩19,500',t:'반복 구매 1위'},{e:'🌊',n:'세타필 크림 250g',p:'₩24,000',t:'업그레이드'},{e:'🫙',n:'바이오더마 크림',p:'₩21,000',t:'유사 상품'},{e:'✨',n:'아벤느 크림 50ml',p:'₩18,000',t:'유사 상품'}]}},
+      {id:'r2',icon:'🔍',bg:'#fce8ec',title:'"세라마이드 크림" 검색 기반으로 골라드릴까요?',desc:'최근 검색하신 키워드에서 많이 산 상품이에요',algo:'검색 의도 기반 추천',
+       result:{title:'"세라마이드 크림" 검색 기반',sub:'같은 키워드 검색 후 전환율 높은 상품',
+        items:[{e:'🏺',n:'일리윤 세라마이드 크림',p:'₩19,800',t:'전환율 75%'},{e:'💊',n:'AHC 세라마이드 앰플',p:'₩26,000',t:'전환율 62%'},{e:'🌿',n:'닥터자르트 시카페어',p:'₩31,000',t:'전환율 55%'},{e:'✨',n:'라로슈포제 시카플라스트',p:'₩22,000',t:'전환율 48%'}]}}
+    ]
+  },
+  {
+    id: 2,
+    name: '박준호',
+    avatar: '🌱',
+    skinType: '복합 피부',
+    concerns: ['기초 루틴 시작', '피부 정돈'],
+    age: '20대 / 뷰티 입문',
+    totalItems: 4,
+    avgDays: 67,
+    cleansingCount: 3,
+    cleansingItems: [
+      {
+        id:'c0',type:'충동',emoji:'🧖',
+        name:'SK-II 페이셜 트리트먼트 에센스',
+        meta:'담은 지 88일 · 유튜브 광고 유입 · 재조회 없음',
+        price:'₩89,000',
+        reason:'유튜브 광고 영향으로 담으셨지만 이후 관심 신호가 없어요. 뷰티 입문 단계에서 고가 에센스보다 기초템부터 시작하는 걸 추천해요.',
+        defaultChecked: true
+      },
+      {
+        id:'c1',type:'충동',emoji:'🫧',
+        name:'설화수 윤조에센스 미니',
+        meta:'담은 지 72일 · 기획전 유입 · 검색 없음',
+        price:'₩42,000',
+        reason:'기획전에서 담으셨지만 에센스 카테고리 검색 이력이 없어요. 기초 루틴이 잡히기 전에 담으신 것 같아요.',
+        defaultChecked: true
+      },
+      {
+        id:'c2',type:'시즌',emoji:'☀️',
+        name:'겨울 영양 크림 리치 텍스처',
+        meta:'담은 지 95일 · 겨울 전용 고점도',
+        price:'₩31,000',
+        reason:'겨울용 고영양 크림인데 지금은 봄이에요. 봄·여름에는 가벼운 수분크림이 더 잘 맞아요.',
+        defaultChecked: false
+      }
+    ],
+    keepItems: [
+      {emoji:'🫧',name:'세타필 순한 폼클렌저 150ml',type:'보관',meta:'반복 구매 2회 · 재구매 타이밍',price:'₩12,800'}
+    ],
+    recOptions: [
+      {id:'r0',icon:'🌱',bg:'#e8f2ec',title:'뷰티 입문자에게 추천하는 기초 루틴이에요',desc:'복합 피부 입문자들이 가장 많이 시작한 조합이에요',algo:'입문자 온보딩 추천',
+       result:{title:'기초 루틴 스타터 패키지',sub:'복합 피부 입문자 추천 조합',
+        items:[{e:'🫧',n:'세타필 폼클렌저 150ml',p:'₩12,800',t:'입문 1순위'},{e:'💧',n:'아누아 어성초 토너',p:'₩16,000',t:'입문 2순위'},{e:'🌿',n:'라운드랩 수분크림',p:'₩15,500',t:'입문 3순위'},{e:'☀️',n:'바이오더마 선크림',p:'₩18,000',t:'입문 4순위'}]}},
+      {id:'r1',icon:'👥',bg:'#fef3e2',title:'비슷한 피부 고민을 가진 분들의 선택이에요',desc:'복합 피부 + 기초 루틴 시작 유저 156명 기준',algo:'Collaborative Filtering',
+       result:{title:'복합 피부 유저 추천',sub:'같은 피부 타입 입문자 156명 기준',
+        items:[{e:'✨',n:'코스알엑스 스네일 에센스',p:'₩19,000',t:'구매율 65%'},{e:'🌊',n:'토리든 다이브인 세럼',p:'₩29,000',t:'구매율 58%'},{e:'💊',n:'닥터지 레드 블레미쉬',p:'₩22,000',t:'구매율 51%'},{e:'🌸',n:'이니스프리 그린티 세럼',p:'₩18,000',t:'구매율 44%'}]}},
+      {id:'r2',icon:'🔄',bg:'#fce8ec',title:'세타필 클렌저 슬슬 떨어질 때 됐어요',desc:'반복 구매 주기로 보면 지금이 딱 타이밍이에요',algo:'소진 리마인드 · 확장 ①',
+       result:{title:'세타필 클렌저 재구매',sub:'반복 구매 2회 기준 소진 리마인드',
+        items:[{e:'🫧',n:'세타필 폼클렌저 150ml',p:'₩12,800',t:'반복 구매'},{e:'🫧',n:'세타필 클렌저 250ml',p:'₩16,800',t:'업그레이드'},{e:'🌊',n:'아벤느 젤 클렌저',p:'₩14,000',t:'유사 상품'},{e:'🌱',n:'라로슈포제 젤 클렌저',p:'₩15,500',t:'유사 상품'}]}}
+    ]
+  }
+];
+
+// ════════════════════════════════════════
+// 상태
+// ════════════════════════════════════════
+let currentUserIdx = 0;
+let currentStep = 1;
+let checkedMap = {};  // id → boolean
+
+function getUser() { return USERS[currentUserIdx]; }
+
+// ════════════════════════════════════════
+// 유저 전환
+// ════════════════════════════════════════
+function switchUser(idx) {
+  currentUserIdx = parseInt(idx);
+  currentStep = 1;
+  checkedMap = {};
+  renderAll();
+  goStep(1, false);
+}
+
+function renderAll() {
+  const u = getUser();
+
+  // 초기 체크 상태
+  u.cleansingItems.forEach(item => {
+    checkedMap[item.id] = item.defaultChecked;
+  });
+
+  // GNB 카트 수
+  document.getElementById('gnb-cart-btn').textContent = `🛒 장바구니 ${u.totalItems}`;
+
+  // 배너 업데이트
+  document.getElementById('banner-avatar').textContent = u.avatar;
+  document.getElementById('banner-name').textContent = `${u.name}님의 장바구니`;
+  document.getElementById('banner-info').textContent = `${u.skinType} · ${u.concerns.join(', ')} · ${u.age}`;
+  const tagsEl = document.getElementById('banner-tags');
+  tagsEl.innerHTML = [u.skinType, ...u.concerns].map(t => `<span class="user-tag">${t}</span>`).join('');
+
+  // step-desc
+  document.getElementById('step-desc').textContent =
+    `${u.name}님의 장바구니 ${u.totalItems}개 상품을 행동 데이터로 분석했어요`;
+
+  // 각 스크린 렌더
+  renderScreen1();
+  renderScreen2();
+  renderScreen3();
+  renderDone();
+}
+
+// ════════════════════════════════════════
+// STEP 1 렌더
+// ════════════════════════════════════════
+function renderScreen1() {
+  const u = getUser();
+  const typeCount = {};
+  u.cleansingItems.forEach(i => typeCount[i.type] = (typeCount[i.type]||0)+1);
+
+  const typeDescs = {
+    '충동': `충동 ${typeCount['충동']||0}`,
+    '해결': `이미 해결된 니즈 ${typeCount['해결']||0}`,
+    '시즌': `시즌 미스매치 ${typeCount['시즌']||0}`
+  };
+  const cleanDesc = Object.entries(typeDescs).filter(([,v])=>!v.endsWith('0')).map(([,v])=>v).join(' · ');
+
+  document.getElementById('s1-content').innerHTML = `
+    <div class="three-col" style="margin-bottom:22px;">
+      <div class="stat-card">
+        <div class="stat-icon" style="background:var(--coral-light);">🛒</div>
+        <div><div class="stat-num" style="color:var(--coral);">${u.totalItems}</div><div class="stat-label">총 방치 상품</div></div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon" style="background:var(--amber-light);">📅</div>
+        <div><div class="stat-num" style="color:var(--amber);">${u.avgDays}일</div><div class="stat-label">평균 방치 기간</div></div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon" style="background:var(--sage-pale);">🧹</div>
+        <div><div class="stat-num" style="color:var(--olive);">${u.cleansingCount}개</div><div class="stat-label">클렌징 후보</div></div>
+      </div>
+    </div>
+    <div class="two-col">
+      <div style="display:flex;flex-direction:column;gap:14px;">
+        <div class="card">
+          <div class="card-head" style="border-left:4px solid var(--coral);">
+            <div><div class="card-head-title">🗑️ 클렌징 추천 ${u.cleansingCount}개</div>
+            <div class="card-head-sub">${cleanDesc}</div></div>
+            <span class="badge badge-충동">정리 필요</span>
+          </div>
+          <div style="padding:12px 20px;font-size:12px;color:var(--text-soft);line-height:1.7;">
+            구매 이력과 검색 데이터를 분석해 실제로 필요하지 않을 가능성이 높은 상품들이에요. 지울지 말지는 ${u.name}님이 결정해요.
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head" style="border-left:4px solid var(--teal);">
+            <div><div class="card-head-title">🤔 고민·보관 상품 ${u.keepItems.length}개</div>
+            <div class="card-head-sub">관심 신호 또는 반복 구매 이력이 있는 상품</div></div>
+            <span class="badge badge-고민">유지</span>
+          </div>
+          <div style="padding:12px 20px;font-size:12px;color:var(--text-soft);line-height:1.7;">
+            ${u.keepItems.filter(i=>i.type==='고민').length}개는 아직 살지 고민 중이고, ${u.keepItems.filter(i=>i.type==='보관').length}개는 늘 쓰는 상품이에요.
+          </div>
+        </div>
+      </div>
+      <div class="sidebar">
+        <div class="sidebar-head"><div class="sidebar-head-title">📊 분석 기반 데이터</div><div class="sidebar-head-sub">어떤 데이터를 봤는지 알려드려요</div></div>
+        <div>
+          <div class="sidebar-row"><span class="sidebar-row-label">🔍 검색 이력 분석</span><span class="sidebar-row-val" style="color:var(--teal);">${u.totalItems*3+2}건</span></div>
+          <div class="sidebar-row"><span class="sidebar-row-label">🛍️ 구매 이력 확인</span><span class="sidebar-row-val" style="color:var(--teal);">${u.totalItems*2+4}건</span></div>
+          <div class="sidebar-row"><span class="sidebar-row-label">📱 유입 경로 확인</span><span class="sidebar-row-val" style="color:var(--pink);">배너 ${typeCount['충동']||0}건</span></div>
+          <div class="sidebar-row"><span class="sidebar-row-label">🌸 계절 적합도</span><span class="sidebar-row-val" style="color:var(--purple);">${typeCount['시즌']||0}건 미스매치</span></div>
+        </div>
+        <div class="sidebar-footer">
+          <div class="info-banner green" style="margin:0;font-size:12px;">"사게 만드는 것"이 아니라 <strong>"제대로 사게 만드는 것"</strong>을 목표로 해요</div>
+          <button class="btn btn-primary btn-full btn-lg" onclick="goStep(2)">클렌징 시작하기 →</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+// ════════════════════════════════════════
+// STEP 2 렌더
+// ════════════════════════════════════════
+function renderScreen2() {
+  const u = getUser();
+
+  // 타입별 그룹핑
+  const groups = {};
+  u.cleansingItems.forEach(item => {
+    if (!groups[item.type]) groups[item.type] = [];
+    groups[item.type].push(item);
+  });
+
+  const typeLabel = { '충동':'⚡ 충동 구매 상품', '해결':'✅ 이미 해결된 니즈', '시즌':'🌸 시즌 미스매치' };
+  const typeSub = { '충동':'검색 없이 담았고 이후 관심 신호가 없어요', '해결':'담은 후 비슷한 상품을 이미 구매하셨어요', '시즌':'지금 계절에 쓰기 애매한 상품이에요' };
+  const typeReasonClass = { '충동':'충동', '해결':'해결', '시즌':'시즌' };
+
+  let cleansingHTML = Object.entries(groups).map(([type, items]) => `
+    <div class="card" style="margin-bottom:14px;">
+      <div class="card-head" style="border-left:4px solid var(--${type==='충동'?'pink':type==='해결'?'coral':'purple'});">
+        <div><div class="card-head-title">${typeLabel[type]}</div><div class="card-head-sub">${typeSub[type]}</div></div>
+        <span class="badge badge-${type==='충동'?'충동':type==='해결'?'해결':'시즌'}">${items.length}개</span>
+      </div>
+      ${items.map(item => `
+        <div class="product-row" onclick="toggleCheck('${item.id}')">
+          <div class="check-circle ${checkedMap[item.id]?'checked':''}" id="${item.id}"></div>
+          <div class="product-thumb">${item.emoji}</div>
+          <div class="product-info">
+            <div class="product-name">${item.name}</div>
+            <div class="product-meta">${item.meta}</div>
+            <span class="badge badge-${type==='충동'?'충동':type==='해결'?'해결':'시즌'}">${type==='충동'?'⚡ 충동':type==='해결'?'✅ 니즈 해결':'🌸 시즌 미스매치'}</span>
+          </div>
+          <div style="text-align:right;flex-shrink:0;"><div class="product-price">${item.price}</div></div>
+        </div>
+        <div class="reason-box ${typeReasonClass[type]}">💡 ${item.reason}
+          ${type==='시즌'?`<div style="margin-top:6px;"><button class="btn btn-sm" style="background:var(--purple-light);color:var(--purple);border:1px solid var(--purple);font-size:11px;" onclick="event.stopPropagation();showToast('시즌 알림을 예약했어요 🔔')">🔔 다음 시즌 알림 받기</button></div>`:''}
+        </div>
+      `).join('')}
+    </div>
+  `).join('');
+
+  let keepHTML = `
+    <div class="card">
+      <div class="card-head">
+        <div><div class="card-head-title">장바구니 유지 상품</div><div class="card-head-sub">고민·보관 상품은 그대로 둘게요</div></div>
+        <span style="font-size:13px;color:var(--text-soft);">${u.keepItems.length}개</span>
+      </div>
+      ${u.keepItems.map(item=>`
+        <div class="keep-row">
+          <div class="keep-thumb">${item.emoji}</div>
+          <div style="flex:1;min-width:0;">
+            <div style="font-size:13px;font-weight:500;">${item.name}</div>
+            <div style="display:flex;gap:7px;align-items:center;margin-top:4px;">
+              <span class="badge badge-${item.type}">${item.type==='고민'?'🤔 고민 중':item.type==='보관'?'📌 보관':''}</span>
+              <span style="font-size:11px;color:var(--text-soft);">${item.meta}</span>
+            </div>
+          </div>
+          <div style="font-size:13px;font-weight:600;flex-shrink:0;">${item.price}</div>
+        </div>
+      `).join('')}
+    </div>`;
+
+  document.getElementById('s2-content').innerHTML = `
+    <div class="two-col">
+      <div>
+        <div class="info-banner coral" style="margin-bottom:16px;">체크한 상품은 삭제돼요. 원하지 않으면 체크 해제하고 넘어가도 돼요.</div>
+        ${cleansingHTML}
+        ${keepHTML}
+      </div>
+      <div class="sidebar">
+        <div class="sidebar-head"><div class="sidebar-head-title">🗑️ 클렌징 요약</div><div class="sidebar-head-sub">체크한 상품이 삭제돼요</div></div>
+        <div id="s2-sidebar-list">
+          ${Object.entries(groups).map(([type,items])=>`
+            <div class="sidebar-row">
+              <span class="sidebar-row-label">${typeLabel[type].split(' ')[0]} ${typeSub[type].slice(0,6)}...</span>
+              <span class="sidebar-row-val" style="color:var(--${type==='충동'?'pink':type==='해결'?'coral':'purple'});">${items.length}개</span>
+            </div>
+          `).join('')}
+          <div class="sidebar-row" style="border-top:2px solid var(--border);">
+            <span class="sidebar-row-label" style="font-weight:700;color:var(--text);">삭제 예정</span>
+            <span class="sidebar-row-val" style="color:var(--coral);font-size:17px;" id="delete-count">${countChecked()}개</span>
+          </div>
+          <div class="sidebar-row"><span class="sidebar-row-label">남는 상품</span><span class="sidebar-row-val" style="color:var(--olive);">${u.totalItems - countChecked()}개</span></div>
+        </div>
+        <div class="sidebar-footer">
+          <button class="btn btn-outline btn-full" onclick="goStep(1)">← 이전으로</button>
+          <button class="btn btn-primary btn-full btn-lg" onclick="goStep(3)">선택 삭제 후 다음 →</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+// ════════════════════════════════════════
+// STEP 3 렌더
+// ════════════════════════════════════════
+function renderScreen3() {
+  const u = getUser();
+
+  const optionsHTML = u.recOptions.map(opt => `
+    <div class="rec-card" id="${opt.id}" onclick="selectRec('${opt.id}')">
+      <div class="rec-icon" style="background:${opt.bg};">${opt.icon}</div>
+      <div style="flex:1;">
+        <div class="rec-title">${opt.title}</div>
+        <div class="rec-desc">${opt.desc}</div>
+        <span class="rec-algo">${opt.algo}</span>
+      </div>
+      <div class="rec-arrow">›</div>
+    </div>
+  `).join('');
+
+  document.getElementById('s3-content').innerHTML = `
+    <div style="background:var(--sage-pale);border:1px solid #c0dcc8;border-radius:12px;padding:14px 22px;margin-bottom:22px;display:flex;gap:14px;align-items:center;">
+      <div style="font-size:28px;">✅</div>
+      <div>
+        <div style="font-size:15px;font-weight:700;color:var(--olive);">${countChecked()}개 상품 정리 완료!</div>
+        <div style="font-size:12px;color:var(--text-soft);margin-top:2px;">장바구니가 깔끔해졌어요. 이제 뭘 보여드릴까요?</div>
+      </div>
+    </div>
+    <div class="two-col">
+      <div>
+        <div id="rec-options-${u.id}">
+          <div style="font-size:15px;font-weight:700;margin-bottom:14px;">원하는 걸 골라보세요</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+            ${optionsHTML}
+          </div>
+          <div style="margin-top:14px;text-align:center;">
+            <button class="btn btn-outline" onclick="goStep('done')">괜찮아요, 완료할게요</button>
+          </div>
+        </div>
+        <div id="rec-result-area" style="display:none;">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+            <div>
+              <div style="font-size:15px;font-weight:700;" id="rec-result-title"></div>
+              <div style="font-size:12px;color:var(--text-soft);margin-top:2px;" id="rec-result-sub"></div>
+            </div>
+            <button class="btn btn-outline btn-sm" onclick="backToOptions()">← 다른 추천 보기</button>
+          </div>
+          <div class="rec-grid" id="rec-grid"></div>
+        </div>
+      </div>
+      <div class="sidebar">
+        <div class="sidebar-head"><div class="sidebar-head-title">🌿 이번 분석 결과</div><div class="sidebar-head-sub">${u.name}님의 정리 내역</div></div>
+        <div>
+          <div class="sidebar-row"><span class="sidebar-row-label">🗑️ 정리한 상품</span><span class="sidebar-row-val" style="color:var(--coral);">${countChecked()}개</span></div>
+          <div class="sidebar-row"><span class="sidebar-row-label">✅ 남은 상품</span><span class="sidebar-row-val" style="color:var(--olive);">${u.totalItems - countChecked()}개</span></div>
+        </div>
+        <div class="sidebar-footer">
+          <div class="info-banner green" style="margin:0;font-size:12px;">추천 신뢰가 쌓일수록 더 잘 맞는 상품을 보여드릴게요 🌿</div>
+          <button class="btn btn-primary btn-full btn-lg" onclick="goStep('done')">🎉 분석 완료</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+// ════════════════════════════════════════
+// 완료 렌더
+// ════════════════════════════════════════
+function renderDone() {
+  const u = getUser();
+  document.getElementById('done-content').innerHTML = `
+    <div class="done-banner">
+      <div class="done-icon-big">🌿</div>
+      <div>
+        <div class="done-title">장바구니 정리 완료!</div>
+        <div class="done-desc">불필요한 상품 ${countChecked()}개를 정리하고 필요한 상품만 남겼어요.<br>추천 신뢰가 쌓일수록 ${u.name}님에게 더 잘 맞는 상품을 보여드릴게요.</div>
+        <div style="margin-top:20px;display:flex;gap:12px;">
+          <button class="btn btn-secondary btn-lg" onclick="goStep(1);renderAll()">처음부터 다시보기</button>
+          <button class="btn btn-outline btn-lg" style="background:rgba(255,255,255,.12);color:white;border-color:rgba(255,255,255,.3);" onclick="showToast('장바구니로 이동합니다')">장바구니로 가기</button>
+        </div>
+      </div>
+    </div>
+    <div class="three-col">
+      <div class="stat-card"><div class="stat-icon" style="background:var(--coral-light);">🗑️</div><div><div class="stat-num" style="color:var(--coral);">${countChecked()}개</div><div class="stat-label">정리한 상품</div></div></div>
+      <div class="stat-card"><div class="stat-icon" style="background:var(--sage-pale);">✅</div><div><div class="stat-num" style="color:var(--olive);">${u.totalItems - countChecked()}개</div><div class="stat-label">남은 유효 상품</div></div></div>
+      <div class="stat-card"><div class="stat-icon" style="background:var(--purple-light);">🌱</div><div><div class="stat-num" style="color:var(--olive);">${u.name[0]}님</div><div class="stat-label">분석 완료</div></div></div>
+    </div>`;
+}
+
+// ════════════════════════════════════════
+// 유틸
+// ════════════════════════════════════════
+function countChecked() {
+  return Object.values(checkedMap).filter(Boolean).length;
+}
+
+function toggleCheck(id) {
+  checkedMap[id] = !checkedMap[id];
+  const el = document.getElementById(id);
+  if (el) el.classList.toggle('checked', checkedMap[id]);
+  const dc = document.getElementById('delete-count');
+  if (dc) dc.textContent = countChecked() + '개';
+}
+
+function selectRec(optId) {
+  const u = getUser();
+  const opt = u.recOptions.find(o => o.id === optId);
+  if (!opt) return;
+  document.querySelectorAll('.rec-card').forEach(c => c.classList.remove('selected'));
+  const card = document.getElementById(optId);
+  if (card) card.classList.add('selected');
+
+  document.getElementById('rec-result-title').textContent = opt.result.title;
+  document.getElementById('rec-result-sub').textContent = opt.result.sub;
+  document.getElementById('rec-grid').innerHTML = opt.result.items.map(item => `
+    <div class="rec-product">
+      <div class="rec-product-img">${item.e}</div>
+      <div class="rec-product-body">
+        <div class="rec-product-name">${item.n}</div>
+        <div class="rec-product-price">${item.p}</div>
+        <span class="rec-product-tag">${item.t}</span>
+      </div>
+    </div>`).join('');
+
+  document.getElementById('rec-options-' + u.id).style.display = 'none';
+  document.getElementById('rec-result-area').style.display = 'block';
+}
+
+function backToOptions() {
+  const u = getUser();
+  document.getElementById('rec-options-' + u.id).style.display = 'block';
+  document.getElementById('rec-result-area').style.display = 'none';
+}
+
+function goStep(step, scroll=true) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  const stepMeta = {
+    1:{ kicker:'STEP 1 OF 3', title:'장바구니 현황 분석' },
+    2:{ kicker:'STEP 2 OF 3', title:'클렌징 추천' },
+    3:{ kicker:'STEP 3 OF 3', title:'맞춤 추천' },
+    done:{ kicker:'완료', title:'장바구니 정리 완료!' }
+  };
+  if (step === 'done') {
+    document.getElementById('screendone').classList.add('active');
+  } else {
+    currentStep = step;
+    document.getElementById('screen' + step).classList.add('active');
+  }
+  const m = stepMeta[step] || stepMeta[1];
+  document.getElementById('step-kicker').textContent = m.kicker;
+  document.getElementById('step-title').textContent = m.title;
+  const u = getUser();
+  const descs = { 1:`${u.name}님의 장바구니 ${u.totalItems}개 상품을 분석했어요`, 2:'지울 상품을 선택해주세요', 3:'원하는 추천 유형을 선택해보세요', done:'분석이 완료됐어요' };
+  document.getElementById('step-desc').textContent = descs[step] || '';
+  updateDots(step === 'done' ? 4 : step);
+  if (scroll) window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function updateDots(step) {
+  for (let i = 1; i <= 3; i++) {
+    const d = document.getElementById('dot' + i);
+    if (i < step) { d.className = 'step-circle done'; d.textContent = '✓'; }
+    else if (i === step) { d.className = 'step-circle active'; d.textContent = i; }
+    else { d.className = 'step-circle inactive'; d.textContent = i; }
+    if (i <= 2) document.getElementById('line' + i).className = 'step-connector ' + (i < step ? 'done' : '');
+  }
+}
+
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2200);
+}
+
+// 초기 렌더
+renderAll();
+goStep(1, false);
+</script>
+</body>
+</html>
