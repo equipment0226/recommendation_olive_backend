@@ -29,7 +29,13 @@ CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 @app.get("/api/health")
 def health():
-    return jsonify({"status": "ok", "backend": config.DATA_BACKEND})
+    return jsonify({
+        "status": "ok",
+        "backend": config.DATA_BACKEND,
+        "version": "v2",
+        "mysql_host": config.MYSQL["host"],
+        "mysql_port": config.MYSQL["port"],
+    })
 
 
 @app.get("/api/users")
