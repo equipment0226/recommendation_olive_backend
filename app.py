@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import os
+import traceback
 
 from flask import Flask, jsonify
 from flask_cors import CORS
@@ -85,6 +86,45 @@ def api_recommend_one(user_id: str, algo: str):
 def api_validate():
     """전체 분류 결과 vs cart_items.expected_bucket 검증(일치율)."""
     return jsonify(validate_all())
+
+
+@app.get("/api/debug")
+def api_debug():
+    """배포 환경 진단용 엔드포인트."""
+    import sys
+    info: dict = {
+        "python": sys.version,
+        "backend": config.DATA_BACKEND,
+        "mysql_host": config.MYSQL["host"],
+        "mysql_port": config.MYSQL["port"],
+        "mysql_db": config.MYSQL["database"],
+    }
+    try:
+        import pymysql
+        conn = pymysql.connect(
+            host=config.MYSQL["host"],
+            port=config.MYSQL["port"],
+            user=config.MYSQL["user"],
+            password=config.MYSQL["password"],
+            database=config.MYSQL["database"],
+            charset=config.MYSQL["charset"],
+            connect_timeout=10,
+        )
+        conn.cursor().execute("SELECT 1")
+        conn.close()
+        info["mysql_connect"] = "ok"
+    except Exception as e:
+        info["mysql_connect"] = str(e)
+    return jsonify(info)
+
+
+@app.errorhandler(Exception)
+def handle_exception(e):
+    """500 에러 시 traceback을 JSON으로 반환 (디버깅용)."""
+    return jsonify({
+        "error": str(e),
+        "traceback": traceback.format_exc(),
+    }), 500
 
 
 if __name__ == "__main__":
