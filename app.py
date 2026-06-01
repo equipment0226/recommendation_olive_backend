@@ -23,12 +23,8 @@ from recommendation.recommender import (
 
 app = Flask(__name__)
 
-# 개발(Vite dev server) 및 프로덕션 프론트 오리진 허용
-CORS(app, origins=[
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-    "https://web-production-90966.up.railway.app",
-])
+# API 전용 서버 — 모든 오리진 허용 (Vercel 프론트 등 어디서든 호출 가능)
+CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 
 @app.get("/api/health")

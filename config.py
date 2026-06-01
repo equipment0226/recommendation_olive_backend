@@ -3,6 +3,7 @@
 CSV(데모) → MySQL(실서비스) 전환 시 이 파일의 값만 바꾸면 된다.
 """
 import os
+from urllib.parse import urlparse
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -12,8 +13,34 @@ DATA_DIR = os.path.join(BASE_DIR, "data")
 # "mysql" : pymysql 로 실제 MySQL Web DB 에 접속 (Railway)
 DATA_BACKEND = os.environ.get("DATA_BACKEND", "mysql")
 
-# MySQL 접속 정보 (Railway)
-MYSQL = {
+
+def _parse_mysql_url(url: str) -> dict | None:
+    """mysql://user:pass@host:port/db 형태의 URL 을 파싱한다.
+
+    Railway 가 주입하는 MYSQL_URL / DATABASE_URL 을 그대로 사용하기 위함.
+    내부 네트워크(mysql.railway.internal)를 쓰면 가장 안정적이다.
+    """
+    if not url:
+        return None
+    p = urlparse(url)
+    if p.scheme not in ("mysql", "mysql+pymysql"):
+        return None
+    return {
+        "host": p.hostname or "localhost",
+        "port": p.port or 3306,
+        "user": p.username or "root",
+        "password": p.password or "",
+        "database": (p.path or "/").lstrip("/") or "railway",
+        "charset": "utf8mb4",
+    }
+
+
+# 우선순위: MYSQL_URL > DATABASE_URL > 개별 환경변수 > 기본값(공개 프록시)
+_url_cfg = _parse_mysql_url(
+    os.environ.get("MYSQL_URL") or os.environ.get("DATABASE_URL") or ""
+)
+
+MYSQL = _url_cfg or {
     "host": os.environ.get("MYSQL_HOST", "autorack.proxy.rlwy.net"),
     "port": int(os.environ.get("MYSQL_PORT", "36898")),
     "user": os.environ.get("MYSQL_USER", "root"),
