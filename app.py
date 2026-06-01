@@ -11,6 +11,7 @@ import traceback
 
 from flask import Flask, jsonify
 from flask_cors import CORS
+from werkzeug.exceptions import HTTPException
 
 import config
 from recommendation.bucket import get_cart_analysis, validate_all
@@ -121,6 +122,9 @@ def api_debug():
 @app.errorhandler(Exception)
 def handle_exception(e):
     """500 에러 시 traceback을 JSON으로 반환 (디버깅용)."""
+    # 404 등 HTTP 예외는 원래 상태코드 그대로 반환
+    if isinstance(e, HTTPException):
+        return jsonify({"error": e.description}), e.code
     return jsonify({
         "error": str(e),
         "traceback": traceback.format_exc(),
