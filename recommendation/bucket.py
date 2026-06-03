@@ -22,7 +22,7 @@ from .db import get_db
 BUCKET_META = {
     "충동":         {"group": "cleansing", "type": "충동", "default_checked": True},
     "클렌징_니즈해결": {"group": "cleansing", "type": "해결", "default_checked": True},
-    "클렌징_시즌":   {"group": "cleansing", "type": "시즌", "default_checked": False},
+    "클렌징_시즌":   {"group": "cleansing", "type": "시즌", "default_checked": True},
     "고민":         {"group": "keep",      "type": "고민", "default_checked": False},
     "보관":         {"group": "keep",      "type": "보관", "default_checked": False},
 }
