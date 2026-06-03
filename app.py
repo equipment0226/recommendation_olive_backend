@@ -6,8 +6,11 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import traceback
+import urllib.parse
+import urllib.request
 
 from flask import Flask, jsonify
 from flask_cors import CORS
@@ -89,6 +92,45 @@ def api_recommend_one(user_id: str, algo: str):
 def api_validate():
     """전체 분류 결과 vs cart_items.expected_bucket 검증(일치율)."""
     return jsonify(validate_all())
+
+
+# ── Pexels 샘플 이미지 ────────────────────────────────────────────────
+# category_id 별로 영어 쿼리로 Pexels 검색 → 이미지 URL 풀을 반환.
+# 결과는 메모리에 캐싱하여 rate limit/지연을 줄이고 동일 이미지를 안정 제공.
+_image_cache: dict[str, list[str]] = {}
+
+
+@app.get("/api/images/<category_id>")
+def api_images(category_id: str):
+    """카테고리별 Pexels 샘플 이미지 URL 풀 (프론트가 중복 없이 배정)."""
+    if category_id in _image_cache:
+        return jsonify({"category_id": category_id, "images": _image_cache[category_id]})
+
+    query = config.CATEGORY_IMAGE_QUERY.get(category_id, "cosmetic")
+    q = urllib.parse.quote(f"{query} product")
+    url = (
+        f"https://api.pexels.com/v1/search?query={q}"
+        "&per_page=30&orientation=square"
+    )
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": config.PEXELS_API_KEY,
+            "User-Agent": "Mozilla/5.0",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        images = [
+            p["src"]["medium"]
+            for p in data.get("photos", [])
+            if p.get("src", {}).get("medium")
+        ]
+        _image_cache[category_id] = images
+        return jsonify({"category_id": category_id, "images": images})
+    except Exception as e:  # 실패 시 빈 풀 → 프론트는 이모지 폴백
+        return jsonify({"category_id": category_id, "images": [], "error": str(e)})
 
 
 @app.get("/api/debug")

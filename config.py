@@ -49,6 +49,36 @@ MYSQL = _url_cfg or {
     "charset": "utf8mb4",
 }
 
+# ── Pexels 샘플 이미지 API ──────────────────────────────────────────
+PEXELS_API_KEY = os.environ.get(
+    "PEXELS_API_KEY",
+    "kir2AxsM9J1o8zz9wXh73W1fFE9YdG8dp829aO4r0mIu7zDw7rC3gHj4",
+)
+
+# category_id → Pexels 검색 영어 쿼리(상품 키워드). category_name + product 형태.
+CATEGORY_IMAGE_QUERY = {
+    "C001": "skin toner",
+    "C002": "essence serum",
+    "C003": "skincare cream",
+    "C004": "cleansing foam",
+    "C005": "sunscreen",
+    "C006": "face mask sheet",
+    "C007": "shampoo bottle",
+    "C008": "hair treatment",
+    "C009": "body lotion",
+    "C010": "lip balm",
+    "C011": "cushion foundation",
+    "C012": "eyeshadow palette",
+    "C013": "ampoule serum",
+    "C014": "eye cream",
+    "C015": "toner pad",
+    "C016": "facial mist",
+    "C017": "cleansing oil",
+    "C018": "lipstick",
+    "C019": "body wash",
+    "C020": "hair essence",
+}
+
 # ── 추천 로직 파라미터 (기획서 v0.3 / 화면설계서 v0.1) ──────────────
 # 데모는 현재 계절을 'spring' 으로 고정한다(HTML 프로토타입과 동일 결과).
 # 실서비스는 현재 월 → 계절 매핑으로 동적 판정.

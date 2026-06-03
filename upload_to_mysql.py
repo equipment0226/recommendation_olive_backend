@@ -55,6 +55,7 @@ TYPE_OVERRIDES: dict[str, dict[str, str]] = {
         "product_name": "VARCHAR(120)",
         "brand": "VARCHAR(60)",
         "key_ingredients": "TEXT",
+        "concern_target": "TEXT",
         "suitable_season": "VARCHAR(20)",
         "texture": "VARCHAR(40)",
         "volume_ml": "FLOAT",

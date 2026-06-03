@@ -31,7 +31,7 @@ WHERE  skin_type = :skin_type AND user_id <> :user_id
 
 # 유사 고객들이 구매한 상품 랭킹 (이미 산 상품 제외)
 SQL_CF_PRODUCTS = """
-SELECT  p.product_id, p.product_name, p.brand, p.price, cat.category_name,
+SELECT  p.product_id, p.product_name, p.brand, p.price, p.category_id, cat.category_name,
         COUNT(*) AS buyers
 FROM    purchase_history ph
 JOIN    products   p   ON p.product_id   = ph.product_id
@@ -40,7 +40,7 @@ WHERE   ph.user_id IN ({user_list})
   AND   ph.product_id NOT IN (
             SELECT product_id FROM purchase_history WHERE user_id = :user_id
         )
-GROUP BY p.product_id, p.product_name, p.brand, p.price, cat.category_name
+GROUP BY p.product_id, p.product_name, p.brand, p.price, p.category_id, cat.category_name
 ORDER BY buyers DESC, p.price DESC
 LIMIT :limit
 """
@@ -80,6 +80,7 @@ def recommend_cf(user_id: str) -> dict:
         items.append({
             "product_id": r["product_id"], "name": r["product_name"],
             "brand": r["brand"], "price": _won(r["price"]),
+            "category_id": r["category_id"],
             "tag": f"구매율 {rate}%",
         })
     return {
@@ -118,12 +119,12 @@ def recommend_trend(user_id: str) -> dict:
         # 해당 성분을 포함한 상품을 전환율 높은 순으로 매칭
         rows = db.query(
             """
-            SELECT  p.product_id, p.product_name, p.brand, p.price,
+            SELECT  p.product_id, p.product_name, p.brand, p.price, p.category_id,
                     MAX(spp.conversion_rate) AS conv
             FROM    products p
             LEFT JOIN search_purchase_pattern spp ON spp.product_id = p.product_id
             WHERE   p.key_ingredients LIKE :pat
-            GROUP BY p.product_id, p.product_name, p.brand, p.price
+            GROUP BY p.product_id, p.product_name, p.brand, p.price, p.category_id
             ORDER BY conv DESC
             LIMIT 2
             """,
@@ -137,6 +138,7 @@ def recommend_trend(user_id: str) -> dict:
             items.append({
                 "product_id": r["product_id"], "name": r["product_name"],
                 "brand": r["brand"], "price": _won(r["price"]),
+                "category_id": r["category_id"],
                 "tag": f"{ing['ingredient']} ↑{delta}%",
             })
         if len(items) >= config.REC_LIMIT:
@@ -166,7 +168,7 @@ LIMIT   5
 
 # 검색어 → 전환율 높은 상품 (search_purchase_pattern)
 SQL_SEARCH_INTENT = """
-SELECT  p.product_id, p.product_name, p.brand, p.price,
+SELECT  p.product_id, p.product_name, p.brand, p.price, p.category_id,
         spp.conversion_rate, spp.search_keyword
 FROM    search_purchase_pattern spp
 JOIN    products p ON p.product_id = spp.product_id
@@ -194,6 +196,7 @@ def recommend_search_intent(user_id: str) -> dict:
     items = [{
         "product_id": r["product_id"], "name": r["product_name"],
         "brand": r["brand"], "price": _won(r["price"]),
+        "category_id": r["category_id"],
         "tag": f"전환율 {round(r['conversion_rate'] * 100)}%",
     } for r in rows]
 
@@ -212,14 +215,14 @@ def recommend_search_intent(user_id: str) -> dict:
 # 4. 소진/재구매 리마인드
 # ════════════════════════════════════════════════════════════════════
 SQL_REPURCHASE = """
-SELECT  p.product_id, p.product_name, p.brand, p.price,
+SELECT  p.product_id, p.product_name, p.brand, p.price, p.category_id,
         cat.category_name, cat.avg_lifespan_days,
         COUNT(*) AS times, MAX(ph.purchased_at) AS last_at
 FROM    purchase_history ph
 JOIN    products   p   ON p.product_id   = ph.product_id
 JOIN    categories cat ON cat.category_id = p.category_id
 WHERE   ph.user_id = :user_id
-GROUP BY p.product_id, p.product_name, p.brand, p.price,
+GROUP BY p.product_id, p.product_name, p.brand, p.price, p.category_id,
          cat.category_name, cat.avg_lifespan_days
 HAVING  COUNT(*) >= :repeat_min
 ORDER BY times DESC, last_at DESC
@@ -237,6 +240,7 @@ def recommend_repurchase(user_id: str) -> dict:
     items = [{
         "product_id": r["product_id"], "name": r["product_name"],
         "brand": r["brand"], "price": _won(r["price"]),
+        "category_id": r["category_id"],
         "tag": f"반복 구매 {r['times']}회 · 소진 {r['avg_lifespan_days']}일",
     } for r in rows]
 
