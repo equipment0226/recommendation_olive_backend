@@ -18,16 +18,53 @@ def _won(price) -> str:
 
 
 # ════════════════════════════════════════════════════════════════════
-# 1. CF — 유사 고객 구매 기반 추천
+# 1. CF — 유사 고객 구매 기반 추천 (Gower 유사성 SQL)
 # ════════════════════════════════════════════════════════════════════
+# 유사 고객 선정은 Gower 유사도를 SQL 로 계산한다(파이썬 교집합 루프 제거).
+#   - skin_type   : 대칭형 범주 피처 → 같은 그룹만 후보(하드 필터, 그룹 내 유사도 1)
+#   - skin_concerns: 비대칭형 다중값 범주 피처 → 공유 고민 수(shared)로 부분 유사도
+# 현재 정책(동작 보존): "같은 피부타입 AND 공유 고민 1개 이상" 인 고객을 유사로 보고,
+# 그런 고객이 한 명도 없으면 같은 피부타입 전체로 폴백한다. 두 분기 모두 SQL 에서 처리.
 SQL_USER = "SELECT skin_type, skin_concerns, age_group FROM users WHERE user_id = :user_id"
 
-# 같은 피부타입 유저 목록 (고민 교집합은 파이썬에서 계산)
-SQL_SAME_SKIN_USERS = """
-SELECT user_id, skin_concerns
-FROM   users
-WHERE  skin_type = :skin_type AND user_id <> :user_id
-"""
+
+def _build_similar_users_sql(concerns: list[str]) -> tuple[str, dict]:
+    """현재 유저의 피부 고민 목록으로 Gower 유사 고객 선정 SQL 과 파라미터를 만든다.
+
+    각 고민을 구분자(`|`) 경계까지 정확히 매칭하는 비대칭 이진 지표로 환산해
+    공유 고민 수(shared)를 SQL 에서 합산한다. 문자열 연결(||/CONCAT)을 쓰지 않아
+    SQLite·MySQL 양쪽에서 동일하게 동작한다.
+    """
+    params: dict = {}
+    indicators: list[str] = []
+    for i, c in enumerate(concerns):
+        if not c:
+            continue
+        params[f"c{i}"] = c               # 단일 고민(구분자 없음)
+        params[f"c{i}_s"] = f"{c}|%"      # 맨 앞
+        params[f"c{i}_e"] = f"%|{c}"      # 맨 뒤
+        params[f"c{i}_m"] = f"%|{c}|%"    # 가운데
+        indicators.append(
+            f"CASE WHEN (u.skin_concerns = :c{i} "
+            f"OR u.skin_concerns LIKE :c{i}_s "
+            f"OR u.skin_concerns LIKE :c{i}_e "
+            f"OR u.skin_concerns LIKE :c{i}_m) THEN 1 ELSE 0 END"
+        )
+    shared_expr = " + ".join(indicators) if indicators else "0"
+    sql = f"""
+    WITH peer_sim AS (
+        SELECT  u.user_id,
+                ({shared_expr}) AS shared
+        FROM    users u
+        WHERE   u.skin_type = :skin_type AND u.user_id <> :user_id
+    )
+    SELECT user_id
+    FROM   peer_sim
+    WHERE  CASE WHEN (SELECT MAX(shared) FROM peer_sim) > 0
+                THEN shared > 0 ELSE 1 END
+    """
+    return sql, params
+
 
 # 유사 고객들이 구매한 상품 랭킹 (이미 산 상품 제외)
 SQL_CF_PRODUCTS = """
@@ -54,17 +91,10 @@ def recommend_cf(user_id: str) -> dict:
     me = urows[0]
     my_concerns = set((me["skin_concerns"] or "").split("|"))
 
-    peers = db.query(
-        SQL_SAME_SKIN_USERS,
-        {"skin_type": me["skin_type"], "user_id": user_id},
-    )
-    # 피부 고민 교집합이 1개 이상인 유저 = 유사 고객
-    similar = [
-        p["user_id"] for p in peers
-        if my_concerns & set((p["skin_concerns"] or "").split("|"))
-    ]
-    if not similar:
-        similar = [p["user_id"] for p in peers]  # fallback: 동일 피부타입 전체
+    # Gower 유사 고객 선정을 SQL 로 수행 (피부타입 동일 + 공유 고민 ≥1, 없으면 전체 폴백)
+    sim_sql, sim_params = _build_similar_users_sql(sorted(my_concerns))
+    sim_params.update({"skin_type": me["skin_type"], "user_id": user_id})
+    similar = [r["user_id"] for r in db.query(sim_sql, sim_params)]
 
     if not similar:
         return _empty("유사 고객 구매 기반")
