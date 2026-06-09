@@ -107,6 +107,62 @@ PRIMARY_KEYS: dict[str, list[str]] = {
 
 BATCH_SIZE = 500  # INSERT 배치 크기
 
+# ── 인덱스 설계 (SQL문서 6장) ─────────────────────────────────
+# 버킷 판별·추천 쿼리가 자주 쓰는 조회 패턴을 가속한다.
+#   - cart_items   : 유저별 방치 상품 조회, 유저+상품 반복구매 조인
+#   - purchase_history: 유저+상품+날짜(반복구매·니즈해결), 유저+날짜
+#   - search_history  : 유저+날짜, 키워드 LIKE 매칭
+#   - search_purchase_pattern: 키워드별 전환율 정렬, 상품 조인
+#   - products / ingredient_trends: 카테고리·성분·월 조회
+INDEXES: dict[str, list[tuple[str, str]]] = {
+    "cart_items": [
+        # ORDER BY days_in_cart DESC 를 그대로 타도록 내림차순 인덱스(MySQL 8.0+) 적용
+        ("idx_cart_user", "(user_id, days_in_cart DESC)"),
+        ("idx_cart_user_prod", "(user_id, product_id)"),
+    ],
+    "purchase_history": [
+        ("idx_pu_user_prod_date", "(user_id, product_id, purchased_at)"),
+        ("idx_pu_user_date", "(user_id, purchased_at)"),
+    ],
+    "search_history": [
+        ("idx_sh_user_date", "(user_id, searched_at)"),
+        ("idx_sh_user_clicked", "(user_id, product_clicked)"),
+        ("idx_sh_keyword", "(search_keyword)"),
+    ],
+    "search_purchase_pattern": [
+        ("idx_spp_kw_conv", "(search_keyword, conversion_rate)"),
+        ("idx_spp_product", "(product_id)"),
+    ],
+    "products": [
+        ("idx_prod_category", "(category_id)"),
+    ],
+    "ingredient_trends": [
+        ("idx_trend_month", "(month, trend_delta)"),
+        ("idx_trend_ing_month", "(ingredient, month)"),
+    ],
+}
+
+
+def create_indexes(cur) -> int:
+    """INDEXES 정의대로 인덱스를 생성한다(이미 있으면 건너뀜).
+
+    MySQL 은 'CREATE INDEX IF NOT EXISTS' 를 지원하지 않으므로
+    information_schema 로 존재 여부를 확인한 뒤 생성한다.
+    """
+    made = 0
+    for table, idxs in INDEXES.items():
+        for name, cols in idxs:
+            cur.execute(
+                "SELECT COUNT(*) FROM information_schema.statistics "
+                "WHERE table_schema = %s AND table_name = %s AND index_name = %s",
+                (DATABASE, table, name),
+            )
+            if cur.fetchone()[0]:
+                continue
+            cur.execute(f"CREATE INDEX `{name}` ON `{table}` {cols}")
+            made += 1
+    return made
+
 
 def read_csv(path: str) -> tuple[list[str], list[list[str]]]:
     with open(path, encoding="utf-8-sig", newline="") as f:
@@ -205,6 +261,17 @@ def main():
             conn.rollback()
             print(f"ERROR: {exc}")
             sys.exit(1)
+
+    # 테이블 적재 후 인덱스 생성(조회 속도 최적화)
+    print("  [indexes] ", end="", flush=True)
+    try:
+        made = create_indexes(cur)
+        conn.commit()
+        print(f"{made}개 생성(이미 있는 건 건너뜀)")
+    except Exception as exc:
+        conn.rollback()
+        print(f"ERROR: {exc}")
+        sys.exit(1)
 
     cur.close()
     conn.close()

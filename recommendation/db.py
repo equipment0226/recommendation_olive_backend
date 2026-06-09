@@ -119,8 +119,10 @@ class Database:
     def _query_mysql(self, sql: str, params: dict) -> list[dict]:
         import pymysql  # 지연 임포트: CSV 데모에서는 불필요
 
-        # :name → %(name)s 로 변환 (pymysql named 스타일)
-        mysql_sql = re.sub(r":(\w+)", r"%(\1)s", sql)
+        # pymysql 은 paramstyle 이 %-format 이므로 SQL 내 리터럴 '%'(LIKE CONCAT('%',..) 등)를
+        # '%%' 로 이스케이프한 뒤, named 플레이스홀더(:name → %(name)s)로 변환한다.
+        mysql_sql = sql.replace("%", "%%")
+        mysql_sql = re.sub(r":(\w+)", r"%(\1)s", mysql_sql)
         conn = pymysql.connect(cursorclass=pymysql.cursors.DictCursor, **config.MYSQL)
         try:
             with conn.cursor() as cur:

@@ -18,67 +18,99 @@ def _won(price) -> str:
 
 
 # ════════════════════════════════════════════════════════════════════
-# 1. CF — 유사 고객 구매 기반 추천 (Gower 유사성 SQL)
+# 1. CF — 유사 고객 구매 기반 추천 (Gower 유사도 SQL)
 # ════════════════════════════════════════════════════════════════════
-# 유사 고객 선정은 Gower 유사도를 SQL 로 계산한다(파이썬 교집합 루프 제거).
-#   - skin_type   : 대칭형 범주 피처 → 같은 그룹만 후보(하드 필터, 그룹 내 유사도 1)
-#   - skin_concerns: 비대칭형 다중값 범주 피처 → 공유 고민 수(shared)로 부분 유사도
-# 현재 정책(동작 보존): "같은 피부타입 AND 공유 고민 1개 이상" 인 고객을 유사로 보고,
-# 그런 고객이 한 명도 없으면 같은 피부타입 전체로 폴백한다. 두 분기 모두 SQL 에서 처리.
+# 유사 고객 선정을 **SQL 한 문장의 Gower 유사도**로 계산한다(파이썬 루프/동적 SQL 제거).
+#   - skin_type    : 대칭형 범주 피처 → 같은 그룹만 후보(하드 필터, 그룹 내 유사도 1)
+#   - skin_concerns: 비대칭형 다중값 범주 피처 → 공유 고민 수로 부분 유사도
+# 공유 고민 계산은 파이썬 split 없이 MySQL 문자열·집합 함수로 수행한다.
+#   ① 대상 고객의 고민 문자열을 JSON_TABLE 로 토큰 행으로 분해(`|` → JSON 배열)
+#   ② 각 후보 고객의 고민 문자열(`|`→`,`)에 대해 FIND_IN_SET 으로 공유 토큰을 집계
+# Gower 유사도(0~1) = (skin_type 일치 1 + 공유고민/전체고민)/2 를 SQL 에서 산출하며,
+# 거리 = 1 - 유사도 로 정렬·필터에 쓸 수 있다(현재 정책은 공유고민>0 하드필터).
+#
+# 정책(동작 보존): "같은 피부타입 AND 공유 고민 ≥1" 이면 유사, 한 명도 없으면
+# 같은 피부타입 전체로 폴백. 두 분기 모두 SQL 의 CASE/MAX 로 처리한다.
 SQL_USER = "SELECT skin_type, skin_concerns, age_group FROM users WHERE user_id = :user_id"
 
+# 유사 고객 선정 CTE — 두 쿼리(목록/상품)에서 공통으로 재사용한다.
+# [성능 최적화]
+#   ① raw_shared(FIND_IN_SET 공유 고민 수)를 peer_shared CTE 에서 후보당 단 1회만 계산.
+#      기존엔 shared 와 gower 식에서 같은 FIND_IN_SET 을 2번 돌려 CPU 가 2배였다.
+#   ② 전체 고민 수(total)도 tok_count CTE 로 1회만 집계해 CROSS JOIN 으로 상수처럼 사용.
+#   ③ similar 의 WHERE 절 MAX(shared) 상관 서브쿼리 → sim_stat CTE(단일 로우) 로 분리해
+#      CROSS JOIN. 행마다 peer_sim 전체를 재스캔하던 비용을 1회 스캔으로 축소.
+_CTE_SIMILAR_USERS = """
+WITH me AS (
+    SELECT skin_type, skin_concerns
+    FROM   users
+    WHERE  user_id = :user_id
+),
+my_tokens AS (
+    -- 대상 고객의 고민을 토큰 행으로 분해: '모공|여드름' → ["모공","여드름"]
+    SELECT jt.tok
+    FROM   me
+    JOIN   JSON_TABLE(
+               CONCAT('["', REPLACE(me.skin_concerns, '|', '","'), '"]'),
+               '$[*]' COLUMNS (tok VARCHAR(255) PATH '$')
+           ) AS jt
+),
+tok_count AS (
+    -- 전체 고민 수(분모)를 1회만 집계 → 후보마다 재계산하지 않는다
+    SELECT COUNT(*) AS total FROM my_tokens
+),
+peer_shared AS (
+    -- 같은 피부타입 후보별 공유 고민 수(shared)를 FIND_IN_SET 으로 단 1회만 계산
+    -- FIND_IN_SET 양변의 collation 을 명시적으로 맞춘다(JSON_TABLE 산출 토큰 vs 컬럼).
+    SELECT u.user_id,
+           (SELECT COUNT(*) FROM my_tokens t
+            WHERE FIND_IN_SET(t.tok COLLATE utf8mb4_unicode_ci,
+                              REPLACE(u.skin_concerns, '|', ',')) > 0) AS shared
+    FROM   users u, me
+    WHERE  u.skin_type = me.skin_type AND u.user_id <> :user_id
+),
+peer_sim AS (
+    -- 위에서 1회 계산한 shared 를 재사용해 Gower 유사도(0~1) 산출
+    -- gower = (skin_type 일치 1 + 공유고민/전체고민) / 2  ← 공식 동일
+    SELECT ps.user_id, ps.shared,
+           (1 + ps.shared / tc.total) / 2.0 AS gower
+    FROM   peer_shared ps CROSS JOIN tok_count tc
+),
+sim_stat AS (
+    -- 폴백 판정용 MAX(shared) 를 단일 로우 상수로 분리(반복 스캔 제거)
+    SELECT MAX(shared) AS max_shared FROM peer_shared
+),
+similar AS (
+    -- 공유 고민>0 후보, 없으면 같은 피부타입 전체로 폴백
+    SELECT ps.user_id, ps.shared, ps.gower
+    FROM   peer_sim ps CROSS JOIN sim_stat s
+    WHERE  CASE WHEN s.max_shared > 0 THEN ps.shared > 0 ELSE 1 END
+)
+"""
 
-def _build_similar_users_sql(concerns: list[str]) -> tuple[str, dict]:
-    """현재 유저의 피부 고민 목록으로 Gower 유사 고객 선정 SQL 과 파라미터를 만든다.
-
-    각 고민을 구분자(`|`) 경계까지 정확히 매칭하는 비대칭 이진 지표로 환산해
-    공유 고민 수(shared)를 SQL 에서 합산한다. 문자열 연결(||/CONCAT)을 쓰지 않아
-    SQLite·MySQL 양쪽에서 동일하게 동작한다.
-    """
-    params: dict = {}
-    indicators: list[str] = []
-    for i, c in enumerate(concerns):
-        if not c:
-            continue
-        params[f"c{i}"] = c               # 단일 고민(구분자 없음)
-        params[f"c{i}_s"] = f"{c}|%"      # 맨 앞
-        params[f"c{i}_e"] = f"%|{c}"      # 맨 뒤
-        params[f"c{i}_m"] = f"%|{c}|%"    # 가운데
-        indicators.append(
-            f"CASE WHEN (u.skin_concerns = :c{i} "
-            f"OR u.skin_concerns LIKE :c{i}_s "
-            f"OR u.skin_concerns LIKE :c{i}_e "
-            f"OR u.skin_concerns LIKE :c{i}_m) THEN 1 ELSE 0 END"
-        )
-    shared_expr = " + ".join(indicators) if indicators else "0"
-    sql = f"""
-    WITH peer_sim AS (
-        SELECT  u.user_id,
-                ({shared_expr}) AS shared
-        FROM    users u
-        WHERE   u.skin_type = :skin_type AND u.user_id <> :user_id
-    )
-    SELECT user_id
-    FROM   peer_sim
-    WHERE  CASE WHEN (SELECT MAX(shared) FROM peer_sim) > 0
-                THEN shared > 0 ELSE 1 END
-    """
-    return sql, params
-
+# 유사 고객 목록 (peer_n 산출용)
+SQL_CF_SIMILAR = _CTE_SIMILAR_USERS + "SELECT user_id FROM similar"
 
 # 유사 고객들이 구매한 상품 랭킹 (이미 산 상품 제외)
-SQL_CF_PRODUCTS = """
+# [성능 최적화] 이미 구매한 상품 제외를 NOT IN → NOT EXISTS 로 변경.
+#   - NOT IN 은 서브쿼리에 NULL 이 섞이면 결과가 통째로 비는 위험이 있고, 옵티마이저가
+#     세미조인/인덱스를 활용하기 어렵다. NOT EXISTS 는 (user_id, product_id) 인덱스를
+#     타고 첫 매칭에서 단락 평가되어 안전하고 빠르다.
+SQL_CF_PRODUCTS = _CTE_SIMILAR_USERS + """
 SELECT  p.product_id, p.product_name, p.brand, p.price, p.category_id, cat.category_name,
         COUNT(*) AS buyers
 FROM    purchase_history ph
 JOIN    products   p   ON p.product_id   = ph.product_id
 JOIN    categories cat ON cat.category_id = p.category_id
-WHERE   ph.user_id IN ({user_list})
-  AND   ph.product_id NOT IN (
-            SELECT product_id FROM purchase_history WHERE user_id = :user_id
+WHERE   ph.user_id IN (SELECT user_id FROM similar)
+  AND   NOT EXISTS (
+            SELECT 1 FROM purchase_history pe
+            WHERE  pe.user_id = :user_id
+              AND  pe.product_id = ph.product_id
         )
 GROUP BY p.product_id, p.product_name, p.brand, p.price, p.category_id, cat.category_name
-ORDER BY buyers DESC, p.price DESC
+-- buyers·price 동률 시 plan 에 따라 순서가 흔들리지 않도록 product_id 로 결정적 정렬
+ORDER BY buyers DESC, p.price DESC, p.product_id ASC
 LIMIT :limit
 """
 
@@ -92,16 +124,11 @@ def recommend_cf(user_id: str) -> dict:
     my_concerns = set((me["skin_concerns"] or "").split("|"))
 
     # Gower 유사 고객 선정을 SQL 로 수행 (피부타입 동일 + 공유 고민 ≥1, 없으면 전체 폴백)
-    sim_sql, sim_params = _build_similar_users_sql(sorted(my_concerns))
-    sim_params.update({"skin_type": me["skin_type"], "user_id": user_id})
-    similar = [r["user_id"] for r in db.query(sim_sql, sim_params)]
-
+    similar = [r["user_id"] for r in db.query(SQL_CF_SIMILAR, {"user_id": user_id})]
     if not similar:
         return _empty("유사 고객 구매 기반")
 
-    user_list = ", ".join(f"'{u}'" for u in similar)
-    sql = SQL_CF_PRODUCTS.format(user_list=user_list)
-    rows = db.query(sql, {"user_id": user_id, "limit": config.REC_LIMIT})
+    rows = db.query(SQL_CF_PRODUCTS, {"user_id": user_id, "limit": config.REC_LIMIT})
 
     peer_n = len(similar)
     items = []
@@ -128,51 +155,76 @@ def recommend_cf(user_id: str) -> dict:
 # ════════════════════════════════════════════════════════════════════
 SQL_LATEST_MONTH = "SELECT MAX(month) AS m FROM ingredient_trends"
 
-# 최근 달 검색량 상승 성분 (trend_delta 상위)
-SQL_TREND_INGREDIENTS = """
-SELECT  ingredient, search_volume, trend_delta
-FROM    ingredient_trends
-WHERE   month = :month AND trend_delta > 0
-ORDER BY trend_delta DESC
-LIMIT   8
+# 최근 달 상승 성분(trend_delta 상위 8) × 성분 포함 상품(전환율 상위 2)을
+# **윈도우 함수 한 문장**으로 매칭·중복제거·정렬한다(파이썬 루프 제거).
+#   - rising      : 상승 성분에 trend_delta 내림차순 순위(ing_rank)
+#   - top_ing     : LIKE 조인 전에 상위 8개 성분으로 모수 선축소(아래 [성능 최적화])
+#   - cand        : 성분별 포함 상품에 conversion_rate 내림차순 순위(conv_rank)
+#   - top2        : 성분별 전환율 상위 2개만
+#   - first_occ   : 동일 상품의 최초 등장(성분순위→전환순위)만 남겨 중복 제거
+# 최종 정렬 = (ing_rank, conv_rank) → 파이썬 루프의 삽입 순서와 동일, 상위 :limit.
+# [성능 최적화] 기존엔 모든 상승 성분에 대해 products LIKE '%성분%' 풀스캔 조인을 먼저
+#   수행한 뒤 ing_rank<=8 로 잘라내, 불필요한 LIKE 조인·정렬(ROW_NUMBER) 부하가 컸다.
+#   상위 8개 성분으로 먼저 모수를 줄인(top_ing) 다음에야 LIKE 조인을 수행하도록 순서를
+#   바꿔, 가장 무거운 LIKE 조인과 PARTITION 정렬의 입력 카디널리티를 최소화했다.
+SQL_TREND_PRODUCTS = """
+WITH rising AS (
+    SELECT ingredient, trend_delta,
+           ROW_NUMBER() OVER (ORDER BY trend_delta DESC) AS ing_rank
+    FROM   ingredient_trends
+    WHERE  month = :month AND trend_delta > 0
+),
+top_ing AS (
+    -- LIKE 조인 전에 상위 8개 성분만 남겨 조인·정렬 대상 모수를 선제 축소
+    SELECT ingredient, trend_delta, ing_rank
+    FROM   rising
+    WHERE  ing_rank <= 8
+),
+conv AS (
+    SELECT product_id, MAX(conversion_rate) AS conv
+    FROM   search_purchase_pattern
+    GROUP BY product_id
+),
+cand AS (
+    SELECT r.ingredient, r.ing_rank, r.trend_delta,
+           p.product_id, p.product_name, p.brand, p.price, p.category_id,
+           ROW_NUMBER() OVER (PARTITION BY r.ingredient
+                              ORDER BY c.conv DESC) AS conv_rank
+    FROM   top_ing r
+    JOIN   products p ON p.key_ingredients LIKE CONCAT('%', r.ingredient, '%')
+    LEFT JOIN conv c ON c.product_id = p.product_id
+),
+top2 AS (
+    SELECT * FROM cand WHERE conv_rank <= 2
+),
+first_occ AS (
+    SELECT t.*,
+           ROW_NUMBER() OVER (PARTITION BY product_id
+                              ORDER BY ing_rank, conv_rank) AS occ
+    FROM   top2 t
+)
+SELECT product_id, product_name, brand, price, category_id, ingredient, trend_delta
+FROM   first_occ
+WHERE  occ = 1
+ORDER BY ing_rank, conv_rank
+LIMIT :limit
 """
 
 
 def recommend_trend(user_id: str) -> dict:
     db = get_db()
     month = db.query(SQL_LATEST_MONTH)[0]["m"]
-    rising = db.query(SQL_TREND_INGREDIENTS, {"month": month})
+    rows = db.query(SQL_TREND_PRODUCTS, {"month": month, "limit": config.REC_LIMIT})
 
     items = []
-    seen = set()
-    for ing in rising:
-        # 해당 성분을 포함한 상품을 전환율 높은 순으로 매칭
-        rows = db.query(
-            """
-            SELECT  p.product_id, p.product_name, p.brand, p.price, p.category_id,
-                    MAX(spp.conversion_rate) AS conv
-            FROM    products p
-            LEFT JOIN search_purchase_pattern spp ON spp.product_id = p.product_id
-            WHERE   p.key_ingredients LIKE :pat
-            GROUP BY p.product_id, p.product_name, p.brand, p.price, p.category_id
-            ORDER BY conv DESC
-            LIMIT 2
-            """,
-            {"pat": f"%{ing['ingredient']}%"},
-        )
-        delta = round(ing["trend_delta"] * 100)
-        for r in rows:
-            if r["product_id"] in seen:
-                continue
-            seen.add(r["product_id"])
-            items.append({
-                "product_id": r["product_id"], "name": r["product_name"],
-                "brand": r["brand"], "price": _won(r["price"]),
-                "category_id": r["category_id"],
-                "tag": f"{ing['ingredient']} ↑{delta}%",
-            })
-        if len(items) >= config.REC_LIMIT:
-            break
+    for r in rows:
+        delta = round(r["trend_delta"] * 100)
+        items.append({
+            "product_id": r["product_id"], "name": r["product_name"],
+            "brand": r["brand"], "price": _won(r["price"]),
+            "category_id": r["category_id"],
+            "tag": f"{r['ingredient']} ↑{delta}%",
+        })
 
     return {
         "id": "trend", "algo": "트렌드 기반 추천",
@@ -180,7 +232,7 @@ def recommend_trend(user_id: str) -> dict:
         "desc": f"{month} 검색량이 급상승한 성분 기반이에요",
         "result_title": "검색량 상승 성분 트렌드 상품",
         "result_sub": f"{month} 기준 trend_delta 상위 성분 포함",
-        "items": items[: config.REC_LIMIT],
+        "items": items,
     }
 
 
@@ -196,13 +248,28 @@ ORDER BY last_at DESC
 LIMIT   5
 """
 
-# 검색어 → 전환율 높은 상품 (search_purchase_pattern)
+# 최근 검색어 정규화("OO 추천"→"OO")와 전환율 상위 상품 매칭을 **SQL 한 문장**으로 처리.
+#   - recent : 최근 검색어 상위 5개
+#   - norm   : 원문 + ("OO 추천"의 접미사 제거·TRIM) 을 UNION 으로 집합화(중복 제거)
 SQL_SEARCH_INTENT = """
+WITH recent AS (
+    SELECT search_keyword, MAX(searched_at) AS last_at
+    FROM   search_history
+    WHERE  user_id = :user_id
+    GROUP BY search_keyword
+    ORDER BY last_at DESC
+    LIMIT  5
+),
+norm AS (
+    SELECT search_keyword AS kw FROM recent
+    UNION
+    SELECT TRIM(REPLACE(search_keyword, ' 추천', '')) FROM recent
+)
 SELECT  p.product_id, p.product_name, p.brand, p.price, p.category_id,
         spp.conversion_rate, spp.search_keyword
 FROM    search_purchase_pattern spp
 JOIN    products p ON p.product_id = spp.product_id
-WHERE   spp.search_keyword IN ({kw_list})
+WHERE   spp.search_keyword IN (SELECT kw FROM norm)
 ORDER BY spp.conversion_rate DESC
 LIMIT   :limit
 """
@@ -211,17 +278,10 @@ LIMIT   :limit
 def recommend_search_intent(user_id: str) -> dict:
     db = get_db()
     kws = [k["search_keyword"] for k in db.query(SQL_RECENT_KEYWORDS, {"user_id": user_id})]
-    # "OO 추천" 형태도 기본 키워드로 정규화해 포함
-    norm = set()
-    for k in kws:
-        norm.add(k)
-        norm.add(k.replace(" 추천", "").strip())
-    if not norm:
+    if not kws:
         return _empty("검색 의도 기반 추천")
 
-    kw_list = ", ".join(f"'{k}'" for k in norm)
-    sql = SQL_SEARCH_INTENT.format(kw_list=kw_list)
-    rows = db.query(sql, {"limit": config.REC_LIMIT})
+    rows = db.query(SQL_SEARCH_INTENT, {"user_id": user_id, "limit": config.REC_LIMIT})
 
     items = [{
         "product_id": r["product_id"], "name": r["product_name"],
@@ -230,6 +290,11 @@ def recommend_search_intent(user_id: str) -> dict:
         "tag": f"전환율 {round(r['conversion_rate'] * 100)}%",
     } for r in rows]
 
+    # 표시용 대표 키워드(정규화 집합) — 노출 문구에만 사용
+    norm = set()
+    for k in kws:
+        norm.add(k)
+        norm.add(k.replace(" 추천", "").strip())
     sample_kw = next(iter(norm))
     return {
         "id": "search", "algo": "검색 의도 기반 추천",

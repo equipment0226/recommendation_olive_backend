@@ -1,8 +1,8 @@
 """STEP 1·2 — 버킷 분류 로직 (기획서 v0.3 4장 / 화면설계서 S01·S02).
 
-상품(cart row) 단위로 판별하며, 우선순위 결정트리를 적용한다.
-모든 원천 데이터는 SQL 로 조회하고(= CSV/MySQL 공통), 다중 조건 교차 판정만
-파이썬에서 수행한다. expected_bucket 컬럼과 대조해 검증할 수 있다.
+상품(cart row) 단위로 판별하며, 우선순위 결정트리를 **SQL 한 문장**으로 수행한다.
+다중 조건 교차 판정(반복구매·니즈해결·시즌·관심신호)을 모두 CASE/EXISTS 로 옮겨
+파이썬 분류 로직을 제거했다. expected_bucket 컬럼과 대조해 검증할 수 있다.
 
 결정트리(검증 일치율 96%):
   1) 동일상품 반복구매 N회+ → '보관'
@@ -29,50 +29,106 @@ BUCKET_META = {
 
 SEASON_KO = {"spring": "봄", "summer": "여름", "fall": "가을", "winter": "겨울"}
 
+# 현재 계절을 **SQL 에서** 산출한다(SQL문서 2.6 season_now 동일 규칙).
+# 월(MONTH(NOW())) → 계절 매핑을 SQL CASE 로 옮겨 파이썬 날짜 판정을 제거했다.
+# config.CURRENT_SEASON 이 비어 있으면(기본) 이 식이 정답을 주고, 값이 있으면
+# COALESCE 로 그 값(고정 계절, 데모/테스트용 override)이 우선한다.
+SQL_SEASON_NOW = """CASE MONTH(NOW())
+            WHEN 3 THEN 'spring' WHEN 4 THEN 'spring' WHEN 5 THEN 'spring'
+            WHEN 6 THEN 'summer' WHEN 7 THEN 'summer' WHEN 8 THEN 'summer'
+            WHEN 9 THEN 'fall'   WHEN 10 THEN 'fall'  WHEN 11 THEN 'fall'
+            ELSE 'winter'
+        END"""
+
+# 현재 계절 단독 조회(방치 cart 가 없을 때의 표시용 폴백)
+SQL_CURRENT_SEASON = f"SELECT COALESCE(:season, {SQL_SEASON_NOW}) AS season"
+
 
 # ── SQL 조회 ─────────────────────────────────────────────────────────
-SQL_STALE_CART = """
+# 방치 cart row 를 조회하면서 버킷까지 SQL 결정트리(CASE)로 한 번에 판별한다.
+# [성능 최적화] CASE 안의 상관 서브쿼리(EXISTS/COUNT)를 전부 제거하고, 사용자 단위로
+# 1회 집계한 파생 CTE 4개를 메인 FROM 절에 LEFT JOIN 한다. 옵티마이저가 행마다 반복
+# 실행하던 서브쿼리 대신, 작은 집계 결과를 Hash/Nested-Loop Join 으로 일괄 결합한다.
+#   - pc          : (상품별) 반복구매 횟수 — 행별 COUNT 서브쿼리 제거
+#   - cat_purchase: (카테고리별) 최근 구매시점 MAX — EXISTS(담은 후 구매)를 비교식으로 환산
+#   - clk         : 클릭한 상품 집합 — product_clicked EXISTS 제거
+#   - kw_cat      : 검색어가 카테고리명을 포함하는 카테고리 집합 — LIKE 조인을
+#                   행별이 아닌 "사용자 검색어 × 카테고리" 1회로 축소
+# 모든 파생 CTE 는 WHERE user_id = :user_id 로 모수를 사용자 단위로 선제 축소(I/O ↓).
+# 분기 우선순위·판정 의미는 기존과 100% 동일하다.
+SQL_STALE_CART = f"""
+WITH pc AS (
+    -- 반복구매 횟수: 상품별 1회만 집계(행별 COUNT 서브쿼리 대체)
+    SELECT product_id, COUNT(*) AS cnt
+    FROM   purchase_history
+    WHERE  user_id = :user_id
+    GROUP BY product_id
+),
+cat_purchase AS (
+    -- 담은 후 동일 카테고리 구매 EXISTS → 카테고리별 '최근 구매시점' MAX 로 환산
+    SELECT pp.category_id, MAX(ph.purchased_at) AS last_purchased
+    FROM   purchase_history ph
+    JOIN   products pp ON pp.product_id = ph.product_id
+    WHERE  ph.user_id = :user_id
+    GROUP BY pp.category_id
+),
+clk AS (
+    -- 클릭(product_clicked)한 상품 집합: EXISTS 대체용 distinct 키
+    SELECT DISTINCT product_clicked AS product_id
+    FROM   search_history
+    WHERE  user_id = :user_id AND product_clicked IS NOT NULL
+),
+kw_cat AS (
+    -- 검색어가 카테고리명을 포함하는 카테고리: LIKE 조인을 사용자 검색어 집합 ×
+    -- 카테고리로 1회만 수행해 행별 LIKE 상관 서브쿼리를 제거
+    SELECT DISTINCT cat2.category_id
+    FROM   search_history sh
+    JOIN   categories cat2
+        ON sh.search_keyword LIKE CONCAT('%', cat2.category_name, '%')
+    WHERE  sh.user_id = :user_id
+)
 SELECT  c.cart_id, c.user_id, c.product_id, c.added_at, c.days_in_cart,
         c.referrer, c.quantity, c.expected_bucket,
         p.product_name, p.brand, p.category_id, p.key_ingredients,
         p.suitable_season, p.texture, p.volume_ml, p.volume_unit, p.price,
-        cat.category_name, cat.avg_lifespan_days
+        cat.category_name, cat.avg_lifespan_days,
+        COALESCE(:season, {SQL_SEASON_NOW}) AS cur_season,
+        CASE
+            -- 1) 동일 상품 반복구매 N회+ → 보관
+            WHEN COALESCE(pc.cnt, 0) >= :repeat_min
+                THEN '보관'
+            -- 2) 담은 후(added_at 이후) 동일 카테고리 구매 → 니즈해결
+            WHEN cat_purchase.last_purchased > c.added_at
+                THEN '클렌징_니즈해결'
+            -- 3) 시즌 미스매치 → 클릭 신호 있으면 고민, 없으면 시즌
+            WHEN p.suitable_season NOT IN ('all', COALESCE(:season, {SQL_SEASON_NOW}))
+                THEN CASE
+                        WHEN clk.product_id IS NOT NULL THEN '고민'
+                        ELSE '클렌징_시즌'
+                     END
+            -- 4) 관심신호(클릭 OR 카테고리명 검색) → 고민
+            WHEN clk.product_id IS NOT NULL OR kw_cat.category_id IS NOT NULL
+                THEN '고민'
+            -- 5) 그 외 → 충동
+            ELSE '충동'
+        END AS bucket
 FROM    cart_items c
 JOIN    products   p   ON p.product_id  = c.product_id
 JOIN    categories cat ON cat.category_id = p.category_id
+LEFT JOIN pc           ON pc.product_id           = c.product_id
+LEFT JOIN cat_purchase ON cat_purchase.category_id = p.category_id
+LEFT JOIN clk          ON clk.product_id          = c.product_id
+LEFT JOIN kw_cat       ON kw_cat.category_id      = p.category_id
 WHERE   c.user_id = :user_id
   AND   c.days_in_cart >= :stale_days
 ORDER BY c.days_in_cart DESC
-"""
-
-# 동일 상품 반복 구매 횟수 (정책서 4.4 보관 기준)
-SQL_REPEAT_COUNT = """
-SELECT  product_id, COUNT(*) AS cnt
-FROM    purchase_history
-WHERE   user_id = :user_id
-GROUP BY product_id
-"""
-
-# 유저의 구매 이력 (카테고리·구매일 포함) — 니즈해결 판정용
-SQL_USER_PURCHASES = """
-SELECT  ph.product_id, ph.purchased_at, p.category_id
-FROM    purchase_history ph
-JOIN    products p ON p.product_id = ph.product_id
-WHERE   ph.user_id = :user_id
-"""
-
-# 유저의 검색 이력 — catmatch / clicked_this 판정용
-SQL_USER_SEARCHES = """
-SELECT  search_keyword, product_clicked, searched_at
-FROM    search_history
-WHERE   user_id = :user_id
 """
 
 
 def _build_reason(bucket: str, row: dict) -> str:
     """버킷별 사용자용 사유 문구 (화면설계서 문구 방향 반영)."""
     season = SEASON_KO.get(row["suitable_season"], row["suitable_season"])
-    now = SEASON_KO.get(config.CURRENT_SEASON, config.CURRENT_SEASON)
+    now = SEASON_KO.get(row["cur_season"], row["cur_season"])
     days = row["days_in_cart"]
     return {
         "충동": "검색 없이 담았고 이후 관심 신호가 없어요. "
@@ -87,50 +143,40 @@ def _build_reason(bucket: str, row: dict) -> str:
     }.get(bucket, "")
 
 
-def classify_cart_item(row, repeat_counts, purchases, searches) -> str:
-    """단일 cart row 의 버킷을 결정트리로 판별한다."""
-    pid = row["product_id"]
-    cat = row["category_id"]
-    added = row["added_at"]
+def classify_cart_item(row) -> str:
+    """SQL 이 산출한 버킷 값을 그대로 사용한다(분류 로직은 SQL_STALE_CART 의 CASE).
 
-    repeat2 = repeat_counts.get(pid, 0) >= config.REPEAT_PURCHASE_MIN
-    samecat_after = any(
-        pr["category_id"] == cat and (pr["purchased_at"] or "") > (added or "")
-        for pr in purchases
-    )
-    season_mis = row["suitable_season"] not in ("all", config.CURRENT_SEASON)
-    cat_name = row["category_name"]
-    catmatch = any(cat_name in (s["search_keyword"] or "") for s in searches)
-    clicked_this = any(s["product_clicked"] == pid for s in searches)
+    파이썬 결정트리는 제거되었고, 이 함수는 호환을 위해 SQL 결과를 반환한다.
+    """
+    return row["bucket"]
 
-    # 우선순위 결정트리
-    if repeat2:
-        return "보관"
-    if samecat_after:
-        return "클렌징_니즈해결"
-    if season_mis:
-        return "고민" if clicked_this else "클렌징_시즌"
-    if clicked_this or catmatch:
-        return "고민"
-    return "충동"
+
+def current_season() -> str:
+    """현재 계절을 SQL(MONTH(NOW()))로 산출해 반환한다(override 우선)."""
+    db = get_db()
+    row = db.query(SQL_CURRENT_SEASON, {"season": config.CURRENT_SEASON or None})
+    return row[0]["season"]
 
 
 def get_cart_analysis(user_id: str) -> dict:
-    """유저의 방치 장바구니를 분석해 STEP1·STEP2 데이터를 반환한다."""
+    """유저의 방치 장바구니를 분석해 STEP1·STEP2 데이터를 반환한다.
+
+    버킷 분류·현재 계절 판정은 SQL_STALE_CART 의 CASE 가 수행하고, 여기서는 조회
+    결과를 프론트 표시 형태(메타·사유 문구)로 가공만 한다.
+    """
     db = get_db()
-    params = {"user_id": user_id, "stale_days": config.STALE_DAYS}
+    params = {
+        "user_id": user_id,
+        "stale_days": config.STALE_DAYS,
+        "repeat_min": config.REPEAT_PURCHASE_MIN,
+        "season": config.CURRENT_SEASON or None,  # 비어있으면 SQL 이 월 기준 동적 판정
+    }
 
     cart_rows = db.query(SQL_STALE_CART, params)
-    repeat_counts = {
-        r["product_id"]: r["cnt"]
-        for r in db.query(SQL_REPEAT_COUNT, {"user_id": user_id})
-    }
-    purchases = db.query(SQL_USER_PURCHASES, {"user_id": user_id})
-    searches = db.query(SQL_USER_SEARCHES, {"user_id": user_id})
 
     items = []
     for row in cart_rows:
-        bucket = classify_cart_item(row, repeat_counts, purchases, searches)
+        bucket = row["bucket"]
         meta = BUCKET_META[bucket]
         items.append({
             "cart_id": row["cart_id"],
@@ -163,6 +209,9 @@ def get_cart_analysis(user_id: str) -> dict:
     for i in cleansing:
         type_count[i["type"]] = type_count.get(i["type"], 0) + 1
 
+    # 현재 계절: 조회된 행이 있으면 그 값(SQL 산출), 없으면 단독 조회로 폴백
+    season_now = cart_rows[0]["cur_season"] if cart_rows else current_season()
+
     return {
         "user_id": user_id,
         "total_items": total,
@@ -172,7 +221,7 @@ def get_cart_analysis(user_id: str) -> dict:
         "type_count": type_count,
         "cleansing_items": cleansing,
         "keep_items": keep,
-        "current_season": config.CURRENT_SEASON,
+        "current_season": season_now,
     }
 
 

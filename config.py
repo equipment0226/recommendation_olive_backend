@@ -80,9 +80,10 @@ CATEGORY_IMAGE_QUERY = {
 }
 
 # ── 추천 로직 파라미터 (기획서 v0.3 / 화면설계서 v0.1) ──────────────
-# 데모는 현재 계절을 'spring' 으로 고정한다(HTML 프로토타입과 동일 결과).
-# 실서비스는 현재 월 → 계절 매핑으로 동적 판정.
-CURRENT_SEASON = os.environ.get("CURRENT_SEASON", "spring")
+# 현재 계절은 기본적으로 SQL 에서 MONTH(NOW()) 로 동적 판정한다(SQL문서 2.6 season_now).
+# 빈 값("")이면 동적 판정, 특정 계절(spring/summer/fall/winter)을 넣으면 그 값으로 고정
+# (데모·테스트에서 특정 시즌 결과를 재현할 때만 override 로 사용).
+CURRENT_SEASON = os.environ.get("CURRENT_SEASON", "")
 
 # 방치 감지 기준: cart_items.days_in_cart >= STALE_DAYS  (정책서 분기1)
 STALE_DAYS = 30
