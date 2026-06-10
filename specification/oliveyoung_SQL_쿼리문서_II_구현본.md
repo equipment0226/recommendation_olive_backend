@@ -29,6 +29,7 @@
 1. [STEP1·2 — 방치 장바구니 자동 분류](#1-step12--방치-장바구니-자동-분류)
    - 1.1 현재 계절 판정 (`SQL_SEASON_NOW`)
    - 1.2 방치 장바구니 + 버킷 분류 (`SQL_STALE_CART`)
+   - 1.2-P 정식 기능 — 버킷 판별 후 컬럼 적재 (`SQL_BUCKET_PERSIST`)
    - 1.3 검증용 유저 목록 (`SQL_ALL_STALE_USERS`)
 2. [STEP3 — 4가지 추천 알고리즘](#2-step3--4가지-추천-알고리즘)
    - 2.1 유사 고객 추천 / Gower 유사도 (`SQL_CF_PRODUCTS`)
@@ -168,6 +169,176 @@ ORDER BY c.days_in_cart DESC;
 > - 처음엔 CASE 안에서 `EXISTS`/`COUNT` 서브쿼리를 행마다 돌렸지만, **사용자별 1회 집계 CTE
 >   4개(`pc`/`cat_purchase`/`clk`/`kw_cat`)** 로 빼고 `LEFT JOIN` 하여 반복 스캔을 제거(N+1 해소).
 > - 우선순위(보관>니즈해결>시즌>고민>충동)는 정답 라벨과의 일치율을 최대화한 값(4.2 참조).
+
+---
+
+### 1.2-P 정식 기능 — 버킷 판별 후 컬럼 적재 (`SQL_BUCKET_PERSIST`)
+
+> **이 절은 파일럿이 아닌 "정식 기능" 설계 참고용이다.** 실제 [bucket.py](../recommendation/bucket.py)
+> 에는 반영하지 않는다.
+
+**무엇을 위한 기능? (파일럿과의 차이)**
+파일럿(1.2)에서는 테스트 데이터가 가벼워, 조회할 때마다 CTE로 **즉시 판정(on-the-fly)** 하고
+`cart_items.expected_bucket` 은 *정답 라벨(ground truth)* 로만 썼다. 하지만 정식 서비스에서는
+
+- 방치 상품·유저 수가 커져 **매 조회마다 4개 CTE를 다시 집계**하는 비용이 부담되고,
+- STEP1·2 화면, 알림 배치, 통계 집계 등 **여러 곳이 같은 버킷 값을 반복 참조**한다.
+
+그래서 정식 기능에서는 **분류를 한 번 수행해 그 결과(클렌징_시즌/보관/고민/충동/클렌징_니즈해결)
+구분자를 `expected_bucket`(운영 컬럼명은 `bucket`) 에 row별로 적재**해 두고, 조회 측은
+**컬럼을 읽기만** 한다. 즉 *판정(쓰기)* 과 *조회(읽기)* 를 분리한다.
+
+```
+[파일럿]  조회 시점마다 CTE 4개 집계 → CASE 즉시 판정 → 화면
+[정식]    (배치/트리거) CTE 4개 집계 → CASE 판정 → expected_bucket 적재
+          조회 측은 WHERE expected_bucket IS NOT NULL 로 컬럼만 읽음
+```
+
+**어떻게 판단하나**
+판별 로직(우선순위 결정트리)은 **1.2와 100% 동일**하다. 달라지는 것은 결과를 *반환*하는 대신
+*컬럼에 기록*한다는 점뿐이다. 다만 배치는 **전 유저를 한 번에** 처리하므로, 집계 CTE를
+`:user_id` 단일 유저가 아니라 **`user_id` 별로 묶어** 산출한다(아래 `GROUP BY user_id ...`).
+
+**쿼리 ① — 전 유저 일괄 적재 (배치, `UPDATE ... JOIN`)**
+
+```sql
+-- SQL_BUCKET_PERSIST : 방치 cart row 전체에 버킷 구분자를 판별·적재
+-- 신규 cart는 INSERT로 적재되어 있고, 본 쿼리는 expected_bucket(NULL)을 채운다.
+WITH pc AS (                       -- ① 유저·상품별 반복구매 횟수 (보관 신호)
+    SELECT user_id, product_id, COUNT(*) AS cnt
+    FROM   purchase_history
+    GROUP BY user_id, product_id
+),
+cat_purchase AS (                  -- ② 유저·카테고리별 최근 구매시점 (니즈해결 신호)
+    SELECT ph.user_id, pp.category_id, MAX(ph.purchased_at) AS last_purchased
+    FROM   purchase_history ph
+    JOIN   products pp ON pp.product_id = ph.product_id
+    GROUP BY ph.user_id, pp.category_id
+),
+clk AS (                           -- ③ 유저가 클릭한 상품 (관심 신호)
+    SELECT DISTINCT user_id, product_clicked AS product_id
+    FROM   search_history
+    WHERE  product_clicked IS NOT NULL
+),
+kw_cat AS (                        -- ④ 유저가 카테고리명을 검색한 카테고리 (관심 신호)
+    SELECT DISTINCT sh.user_id, cat2.category_id
+    FROM   search_history sh
+    JOIN   categories cat2
+        ON sh.search_keyword LIKE CONCAT('%', cat2.category_name, '%')
+)
+UPDATE cart_items c
+JOIN   products   p   ON p.product_id   = c.product_id
+JOIN   categories cat ON cat.category_id = p.category_id
+LEFT JOIN pc           ON pc.user_id = c.user_id           AND pc.product_id   = c.product_id
+LEFT JOIN cat_purchase ON cat_purchase.user_id = c.user_id AND cat_purchase.category_id = p.category_id
+LEFT JOIN clk          ON clk.user_id = c.user_id          AND clk.product_id  = c.product_id
+LEFT JOIN kw_cat       ON kw_cat.user_id = c.user_id       AND kw_cat.category_id = p.category_id
+SET c.expected_bucket =
+        CASE                                       -- 1.2와 동일한 결정트리
+            WHEN COALESCE(pc.cnt, 0) >= :repeat_min
+                THEN '보관'
+            WHEN cat_purchase.last_purchased > c.added_at
+                THEN '클렌징_니즈해결'
+            WHEN p.suitable_season NOT IN ('all', COALESCE(:season, <SQL_SEASON_NOW>))
+                THEN CASE
+                        WHEN clk.product_id IS NOT NULL THEN '고민'
+                        ELSE '클렌징_시즌'
+                     END
+            WHEN clk.product_id IS NOT NULL OR kw_cat.category_id IS NOT NULL
+                THEN '고민'
+            ELSE '충동'
+        END
+WHERE  c.days_in_cart >= :stale_days               -- 오래 방치된 것만
+  AND  c.expected_bucket IS NULL;                  -- 아직 미판별 row만 (재실행 안전)
+```
+
+**쿼리 ② — 신규 cart 적재 시 즉시 판별 (단건, `INSERT ... SELECT`)**
+
+> 장바구니에 상품이 담기는 시점에 이미 방치 조건(`days_in_cart >= :stale_days`)을 만족하는
+> 백필(backfill)·이관 상황을 가정한 형태다. 실시간 신규 담기는 보통 `days_in_cart = 0` 이라
+> 적재 대상이 아니며, 일별 배치(쿼리 ①)나 트리거로 채워진다.
+
+```sql
+-- SQL_BUCKET_INSERT_ONE : 단일 cart row 판별 + 적재
+INSERT INTO cart_items
+       (cart_id, user_id, product_id, added_at, days_in_cart,
+        referrer, quantity, expected_bucket)
+WITH pc AS (
+    SELECT product_id, COUNT(*) AS cnt
+    FROM   purchase_history WHERE user_id = :user_id
+    GROUP BY product_id
+),
+cat_purchase AS (
+    SELECT pp.category_id, MAX(ph.purchased_at) AS last_purchased
+    FROM   purchase_history ph JOIN products pp ON pp.product_id = ph.product_id
+    WHERE  ph.user_id = :user_id GROUP BY pp.category_id
+),
+clk AS (
+    SELECT DISTINCT product_clicked AS product_id
+    FROM   search_history WHERE user_id = :user_id AND product_clicked IS NOT NULL
+),
+kw_cat AS (
+    SELECT DISTINCT cat2.category_id
+    FROM   search_history sh JOIN categories cat2
+        ON sh.search_keyword LIKE CONCAT('%', cat2.category_name, '%')
+    WHERE  sh.user_id = :user_id
+)
+SELECT  :cart_id, :user_id, :product_id, :added_at, :days_in_cart,
+        :referrer, :quantity,
+        CASE
+            WHEN COALESCE(pc.cnt, 0) >= :repeat_min                          THEN '보관'
+            WHEN cat_purchase.last_purchased > :added_at                     THEN '클렌징_니즈해결'
+            WHEN p.suitable_season NOT IN ('all', COALESCE(:season, <SQL_SEASON_NOW>))
+                THEN CASE WHEN clk.product_id IS NOT NULL THEN '고민' ELSE '클렌징_시즌' END
+            WHEN clk.product_id IS NOT NULL OR kw_cat.category_id IS NOT NULL THEN '고민'
+            ELSE '충동'
+        END
+FROM    products   p
+JOIN    categories cat ON cat.category_id = p.category_id
+LEFT JOIN pc           ON pc.product_id           = p.product_id
+LEFT JOIN cat_purchase ON cat_purchase.category_id = p.category_id
+LEFT JOIN clk          ON clk.product_id          = p.product_id
+LEFT JOIN kw_cat       ON kw_cat.category_id      = p.category_id
+WHERE   p.product_id = :product_id
+ON DUPLICATE KEY UPDATE
+        expected_bucket = VALUES(expected_bucket);   -- 재담기 시 재판별
+```
+
+**적재 후 조회 (읽기 전용으로 단순화)**
+정식에서는 STEP1·2 조회가 더 이상 CTE를 돌리지 않고 **적재된 컬럼만 읽는다**.
+
+```sql
+-- SQL_STALE_CART_READ : 정식 기능의 조회 (판정 로직 없음)
+SELECT  c.cart_id, c.user_id, c.product_id, c.added_at, c.days_in_cart,
+        c.referrer, c.quantity, c.expected_bucket AS bucket,
+        p.product_name, p.brand, p.category_id, p.key_ingredients,
+        p.suitable_season, p.texture, p.volume_ml, p.volume_unit, p.price,
+        cat.category_name, cat.avg_lifespan_days
+FROM    cart_items c
+JOIN    products   p   ON p.product_id  = c.product_id
+JOIN    categories cat ON cat.category_id = p.category_id
+WHERE   c.user_id = :user_id
+  AND   c.days_in_cart >= :stale_days
+  AND   c.expected_bucket IS NOT NULL          -- 이미 판별 완료된 것만
+ORDER BY c.days_in_cart DESC;
+```
+
+> ⚙️ **구현 메모**
+> - **판정 로직은 1.2와 완전히 동일**(우선순위 결정트리·신호 정의 그대로). 차이는 "결과를
+>   반환 vs 컬럼 적재"뿐이라, 파일럿에서 정식으로 넘어갈 때 **로직 검증 자산(`test_*_parity`)을
+>   그대로 재사용**할 수 있다.
+> - **배치 vs 트리거** — 일 1~2회 `SQL_BUCKET_PERSIST` 배치로 채우는 방식이 단순하고 안전하다.
+>   더 즉각적인 갱신이 필요하면 cart INSERT/UPDATE 트리거에서 `SQL_BUCKET_INSERT_ONE` 로직을
+>   호출한다. (단 트리거는 디버깅·부하 관리가 까다로우므로 배치 우선 권장.)
+> - **재실행 안전성** — 배치는 `expected_bucket IS NULL` 조건으로 미판별 row만 갱신한다.
+>   구매·검색 신호가 바뀌어 **전체 재분류**가 필요하면 `expected_bucket = NULL` 로 리셋 후
+>   재실행하거나, `WHERE` 의 NULL 조건을 빼고 전 row를 덮어쓴다.
+> - **컬럼 운영** — 파일럿의 `expected_bucket`(정답 라벨)과 정식의 운영 컬럼은 의미가 다르므로,
+>   정식 전환 시 컬럼명을 `bucket` 으로 두고 `bucket_decided_at`(판별 시각) 을 함께 적재하면
+>   "언제 기준의 분류인지" 추적과 캐시 무효화가 쉬워진다.
+> - **MySQL 9.4 기준** — `WITH ... UPDATE`(CTE 선행 UPDATE)와 `INSERT ... SELECT ... ON
+>   DUPLICATE KEY UPDATE` 모두 지원된다. `<SQL_SEASON_NOW>` 자리에는 1.1의 `CASE MONTH(NOW())`
+>   식이 그대로 인라인된다.
 
 ---
 
