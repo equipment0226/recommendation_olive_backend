@@ -1,63 +1,62 @@
 # 올리브영 장바구니 클렌징 추천 시스템 — SQL 쿼리 문서 II (구현본)
 
-> 본 문서(**문서 II**)는 파일럿 구현체([recommendation/bucket.py](../recommendation/bucket.py),
-> [recommendation/recommender.py](../recommendation/recommender.py))에 **실제로 사용된 SQL** 을
-> 쿼리별로 **① 구조도 → ② 설명 → ③ 쿼리** 순서로 정리한다.
->
-> - 기준 엔진: **MySQL 9.4** (Railway). `JSON_TABLE`·윈도우 함수·CTE 사용.
+> **이 문서는 "왜 이 쿼리를 만들었는가"** 를 중심으로, 각 SQL이 **어떤 추천 기능·알고리즘**을
+> 구현하는지 발표용으로 정리한 것이다. 각 항목은 **① 무엇을 위한 기능 → ② 어떻게 판단하나
+> (알고리즘) → ③ 쿼리** 순으로 읽으면 된다. 성능 튜닝 등 깊은 기술 메모는 각 절 끝의
+> *"⚙️ 구현 메모"* 로 접어 두었다.
+
+## 한눈에 보기 — 6개 SQL이 만드는 사용자 경험
+
+| 단계 | 기능 | 한 줄 설명 | 핵심 SQL |
+|---|---|---|---|
+| STEP1·2 | **방치 장바구니 자동 분류** | 오래 담아둔 상품을 5개 버킷(충동/시즌/니즈해결/고민/보관)으로 자동 정리 | `SQL_STALE_CART` |
+| STEP3 ① | **유사 고객 추천 (CF)** | "나와 피부타입·고민이 비슷한 고객이 산 것"을 Gower 유사도로 추천 | `SQL_CF_PRODUCTS` |
+| STEP3 ② | **트렌드 성분 추천** | "요즘 검색 급상승 성분"이 든 상품을 전환율 순으로 추천 | `SQL_TREND_PRODUCTS` |
+| STEP3 ③ | **검색 의도 추천** | "최근 검색한 키워드"로 구매 전환 잘 되는 상품을 추천 | `SQL_SEARCH_INTENT` |
+| STEP3 ④ | **소진·재구매 리마인드** | "반복 구매하던 상품"의 재구매 타이밍을 알림 | `SQL_REPURCHASE` |
+| 공통 | **현재 계절 판정** | 오늘 날짜로 시즌을 정해 시즌 버킷 판단에 사용 | `SQL_SEASON_NOW` |
+
+> - 기준 엔진: **MySQL 9.4**. `JSON_TABLE`·윈도우 함수·CTE 사용.
 > - 설계 원형: [oliveyoung_SQL_쿼리문서.md](oliveyoung_SQL_쿼리문서.md) (이하 **문서 I**).
-> - 구현 원칙: **분류·추천 알고리즘 로직은 전부 SQL** 로 수행하고, 파이썬은 표시 가공
->   (₩·% 포맷, 사유 문구)과 검증만 담당한다.
-> - 마지막 절에 **문서 I 대비 변경사항·변경사유**를 전부 명기한다.
+> - 구현 원칙: **분류·추천 로직은 전부 SQL** 이 수행하고, 파이썬은 화면 표시(₩·% 포맷,
+>   문구)와 검증만 담당한다 → "로직은 DB에, 표현은 앱에".
+> - 4절에 **문서 I 대비 무엇을·왜 바꿨는지**를 정리한다.
 
 ---
 
 ## 목차
 
-1. [버킷 분류 (STEP1·2)](#1-버킷-분류-step12)
-   - 1.1 현재 계절 산출 (`SQL_SEASON_NOW` / `SQL_CURRENT_SEASON`)
-   - 1.2 방치 장바구니 + 버킷 판별 (`SQL_STALE_CART`)
-   - 1.3 검증 대상 유저 목록 (`SQL_ALL_STALE_USERS`)
-2. [STEP3 추천](#2-step3-추천)
-   - 2.1 CF — 유사 고객 Gower 유사도 (`SQL_USER` / `_CTE_SIMILAR_USERS` / `SQL_CF_SIMILAR` / `SQL_CF_PRODUCTS`)
-   - 2.2 트렌드 기반 (`SQL_LATEST_MONTH` / `SQL_TREND_PRODUCTS`)
-   - 2.3 검색 의도 기반 (`SQL_RECENT_KEYWORDS` / `SQL_SEARCH_INTENT`)
-   - 2.4 소진/재구매 (`SQL_REPURCHASE`)
-3. [인덱스 설계](#3-인덱스-설계)
-4. [문서 I 대비 변경사항 · 변경사유](#4-문서-i-대비-변경사항--변경사유)
+1. [STEP1·2 — 방치 장바구니 자동 분류](#1-step12--방치-장바구니-자동-분류)
+   - 1.1 현재 계절 판정 (`SQL_SEASON_NOW`)
+   - 1.2 방치 장바구니 + 버킷 분류 (`SQL_STALE_CART`)
+   - 1.3 검증용 유저 목록 (`SQL_ALL_STALE_USERS`)
+2. [STEP3 — 4가지 추천 알고리즘](#2-step3--4가지-추천-알고리즘)
+   - 2.1 유사 고객 추천 / Gower 유사도 (`SQL_CF_PRODUCTS`)
+   - 2.2 트렌드 성분 추천 (`SQL_TREND_PRODUCTS`)
+   - 2.3 검색 의도 추천 (`SQL_SEARCH_INTENT`)
+   - 2.4 소진·재구매 리마인드 (`SQL_REPURCHASE`)
+3. [인덱스 설계 — 빠른 응답을 위한 준비](#3-인덱스-설계--빠른-응답을-위한-준비)
+4. [문서 I 대비 무엇을·왜 바꿨나](#4-문서-i-대비-무엇을왜-바꿨나)
 
-> 플레이스홀더는 `:name` 스타일이며, [recommendation/db.py](../recommendation/db.py) 가
-> 실행 시 pymysql 용 `%(name)s` 로 변환한다(리터럴 `%` 는 `%%` 로 이스케이프).
+> 쿼리의 `:name` 은 입력 파라미터다. 실행 시 [db.py](../recommendation/db.py) 가 MySQL 드라이버
+> 형식으로 자동 변환한다.
 
 ---
 
-## 1. 버킷 분류 (STEP1·2)
+## 1. STEP1·2 — 방치 장바구니 자동 분류
 
-### 1.1 현재 계절 산출
+### 1.1 현재 계절 판정 — `SQL_SEASON_NOW`
 
-**구조도**
+**무엇을 위한 기능?**
+시즌 상품(예: 여름용 선크림)이 "지금 계절에 맞는지"를 판단하려면 **오늘이 무슨 계절인지**를
+알아야 한다. 이 조각이 그 기준 계절을 만들어 1.2의 시즌 버킷 판정에 쓰인다.
 
-```
-MONTH(NOW())
-   │  (3~5→spring, 6~8→summer, 9~11→fall, else winter)
-   ▼
-COALESCE(:season, <CASE>)        ← :season 이 있으면 override(데모 고정), 없으면 동적
-   ▼
-current_season
-```
-
-**설명**
-- 문서 I 2.6의 `season_now` CTE를 그대로 옮긴 **월 기준 동적 계절 판정**이다.
-- 파일럿 초기엔 `'spring'` 으로 고정했으나, 본 구현은 기본을 **동적(`MONTH(NOW())`)** 으로
-  전환했다. `config.CURRENT_SEASON` 에 값을 넣으면 `COALESCE` 로 그 값이 우선한다
-  (데모·회귀 테스트에서 특정 시즌 재현용).
-- `SQL_SEASON_NOW` 는 다른 쿼리(`SQL_STALE_CART`)에 **문자열로 삽입**되는 조각이고,
-  `SQL_CURRENT_SEASON` 은 방치 cart가 없을 때 계절만 단독 조회하는 폴백이다.
-
-**쿼리**
+**어떻게 판단하나**
+오늘 **월(月)** 을 보고 봄/여름/가을/겨울로 매핑한다. 운영자가 특정 계절을 강제하고 싶으면
+`:season` 값으로 덮어쓸 수 있다(데모·테스트용).
 
 ```sql
--- SQL_SEASON_NOW (삽입 조각)
+-- SQL_SEASON_NOW : 오늘 월 → 계절
 CASE MONTH(NOW())
     WHEN 3 THEN 'spring' WHEN 4 THEN 'spring' WHEN 5 THEN 'spring'
     WHEN 6 THEN 'summer' WHEN 7 THEN 'summer' WHEN 8 THEN 'summer'
@@ -65,79 +64,67 @@ CASE MONTH(NOW())
     ELSE 'winter'
 END
 
--- SQL_CURRENT_SEASON (단독 조회 폴백)
+-- SQL_CURRENT_SEASON : 방치 상품이 없을 때 계절만 단독 조회(폴백)
 SELECT COALESCE(:season, <SQL_SEASON_NOW>) AS season;
 ```
 
+> ⚙️ **구현 메모** — 문서 I 2.6의 `season_now` 규칙을 그대로 채택. 날짜 판정을 파이썬이 아닌
+> SQL이 하므로 앱·DB 어디서 호출해도 동일한 기준이 보장된다.
+
 ---
 
-### 1.2 방치 장바구니 + 버킷 판별 — `SQL_STALE_CART`
+### 1.2 방치 장바구니 + 버킷 분류 — `SQL_STALE_CART`
 
-**구조도**
+**무엇을 위한 기능?**
+오래 담아두고 안 산 상품(방치 장바구니)을 사용자가 정리하기 쉽도록 **5개 버킷으로 자동
+분류**한다. "삭제 추천(충동/시즌/니즈해결)" vs "유지(고민/보관)" 로 묶어 STEP1·2 화면을 채운다.
+
+| 버킷 | 의미 | 사용자에게 주는 가치 |
+|---|---|---|
+| **충동** | 검색 없이 담았고 이후 관심도 없음 | "정리해도 되는 상품" |
+| **클렌징_시즌** | 지금 계절과 안 맞는 시즌 상품 | "다음 시즌에" |
+| **클렌징_니즈해결** | 담은 뒤 같은 카테고리를 이미 구매 | "이미 해결됨" |
+| **고민** | 클릭·재검색 등 관심 신호가 있음 | "조금 더 고민 중" |
+| **보관** | 반복 구매하던 상품 | "곧 또 살 것" |
+
+**어떻게 판단하나 (우선순위 결정트리)**
+한 상품에 여러 신호가 겹칠 수 있으므로 **위에서부터 먼저 맞는 규칙으로 확정**한다.
 
 ```
-[사용자 단위 1회 집계 파생 CTE]
-  pc           = purchase_history GROUP BY product_id          → 반복구매 횟수
-  cat_purchase = purchase_history⨝products GROUP BY category_id → 카테고리별 MAX(purchased_at)
-  clk          = search_history(product_clicked IS NOT NULL)    → 클릭 상품 집합
-  kw_cat       = search_history⨝categories(LIKE %name%)         → 검색어 포함 카테고리
-        │  (모두 WHERE user_id=:user_id 로 모수 선축소)
-        ▼
-cart_items c ─JOIN─ products p ─JOIN─ categories cat
-        │  LEFT JOIN pc / cat_purchase / clk / kw_cat   ← 상관 서브쿼리 대신 집합 결합
-        │  WHERE user_id=:user_id AND days_in_cart >= :stale_days
-        ▼
-행마다 평가 (LEFT JOIN 결과만 참조, 재스캔 없음):
-   bucket = CASE (우선순위 결정트리)
-     1) COALESCE(pc.cnt,0) >= :repeat_min ........................ '보관'
-     2) cat_purchase.last_purchased > c.added_at ................. '클렌징_니즈해결'
-     3) suitable_season NOT IN ('all', cur_season)
-            ├ clk.product_id IS NOT NULL ........................ '고민'
-            └ else ............................................. '클렌징_시즌'
-     4) clk.product_id IS NOT NULL OR kw_cat.category_id IS NOT NULL  '고민'
-     5) else ........................................... '충동'
-   ▼
-ORDER BY days_in_cart DESC
+1) 같은 상품을 N회 이상 반복 구매했다           → 보관
+2) 담은 뒤 같은 카테고리 상품을 이미 샀다        → 클렌징_니즈해결
+3) 지금 계절과 안 맞는 시즌 상품이다
+        ├ 그래도 클릭한 적 있으면               → 고민
+        └ 아니면                               → 클렌징_시즌
+4) 클릭했거나, 카테고리명을 검색한 적 있다       → 고민
+5) 위 어디에도 안 걸린다                        → 충동
 ```
 
-**설명**
-- 문서 I은 버킷별 쿼리(2.1~2.5)와 통합 CASE(2.6)를 제시했고, **파일럿 초기 구현은 그 결과를
-  파이썬 결정트리(`classify_cart_item`)로 교차 판정**했다. 본 구현은 그 파이썬 로직을 **완전히
-  제거**하고, 조회 한 번에 버킷까지 산출하는 **단일 SQL** 로 통합했다.
-- **[성능 최적화]** 초기 SQL은 CASE 분기마다 `EXISTS`/`COUNT` **상관 서브쿼리**를 두어, 방치
-  cart 행마다 `purchase_history`·`search_history` 를 반복 스캔했다(행 수 × 서브쿼리 = N+1 형태).
-  이를 **사용자 단위로 1회만 집계한 파생 CTE 4개(`pc`/`cat_purchase`/`clk`/`kw_cat`)** 로 빼고
-  메인 `FROM` 에 `LEFT JOIN` 했다. 옵티마이저는 작은 집계 결과를 Hash/Nested-Loop Join 으로
-  **일괄 결합**하므로, 행별 반복 실행이 사라진다(I/O·CPU ↓).
-  - `EXISTS(담은 후 동일 카테고리 구매)` → `cat_purchase.last_purchased > c.added_at` 비교식으로 환산.
-  - 행별 `LIKE` 상관 서브쿼리 → `kw_cat` 에서 "사용자 검색어 × 카테고리" **1회 LIKE 조인**으로 축소.
-- 우선순위는 **보관 > 니즈해결 > 시즌 > 고민 > 충동**. 이는 `expected_bucket` 정답값과의
-  일치율(검증)을 최대화한, 문서 I과 **의도적으로 다른** 순서다(4절 참조). **판정 의미·우선순위는
-  최적화 전후 100% 동일**하다.
-- `cur_season` 도 같은 행에 SELECT 하여 사유 문구 생성 시 파이썬이 계절을 재계산하지 않는다.
+각 신호(반복구매 횟수·카테고리 구매시점·클릭 여부·검색 매칭)는 **사용자별로 한 번만 모아 두고**
+방치 상품 목록에 붙여 판단한다.
 
 **쿼리**
 
 ```sql
-WITH pc AS (                       -- 반복구매 횟수(상품별 1회 집계)
+WITH pc AS (                       -- ① 반복구매 횟수 (보관 신호)
     SELECT product_id, COUNT(*) AS cnt
     FROM   purchase_history
     WHERE  user_id = :user_id
     GROUP BY product_id
 ),
-cat_purchase AS (                  -- 카테고리별 최근 구매시점(EXISTS 환산)
+cat_purchase AS (                  -- ② 카테고리별 최근 구매시점 (니즈해결 신호)
     SELECT pp.category_id, MAX(ph.purchased_at) AS last_purchased
     FROM   purchase_history ph
     JOIN   products pp ON pp.product_id = ph.product_id
     WHERE  ph.user_id = :user_id
     GROUP BY pp.category_id
 ),
-clk AS (                           -- 클릭 상품 집합
+clk AS (                           -- ③ 클릭한 상품 (관심 신호)
     SELECT DISTINCT product_clicked AS product_id
     FROM   search_history
     WHERE  user_id = :user_id AND product_clicked IS NOT NULL
 ),
-kw_cat AS (                        -- 검색어가 카테고리명을 포함하는 카테고리(1회 LIKE 조인)
+kw_cat AS (                        -- ④ 카테고리명을 검색한 카테고리 (관심 신호)
     SELECT DISTINCT cat2.category_id
     FROM   search_history sh
     JOIN   categories cat2
@@ -150,7 +137,7 @@ SELECT  c.cart_id, c.user_id, c.product_id, c.added_at, c.days_in_cart,
         p.suitable_season, p.texture, p.volume_ml, p.volume_unit, p.price,
         cat.category_name, cat.avg_lifespan_days,
         COALESCE(:season, <SQL_SEASON_NOW>) AS cur_season,
-        CASE
+        CASE                                       -- 우선순위 결정트리
             WHEN COALESCE(pc.cnt, 0) >= :repeat_min
                 THEN '보관'
             WHEN cat_purchase.last_purchased > c.added_at
@@ -172,25 +159,23 @@ LEFT JOIN cat_purchase ON cat_purchase.category_id = p.category_id
 LEFT JOIN clk          ON clk.product_id          = c.product_id
 LEFT JOIN kw_cat       ON kw_cat.category_id      = p.category_id
 WHERE   c.user_id = :user_id
-  AND   c.days_in_cart >= :stale_days
+  AND   c.days_in_cart >= :stale_days              -- 오래 방치된 것만
 ORDER BY c.days_in_cart DESC;
 ```
 
+> ⚙️ **구현 메모**
+> - 초기엔 분류를 파이썬 결정트리로 했으나, **조회 한 번에 버킷까지 산출하는 단일 SQL** 로 통합.
+> - 처음엔 CASE 안에서 `EXISTS`/`COUNT` 서브쿼리를 행마다 돌렸지만, **사용자별 1회 집계 CTE
+>   4개(`pc`/`cat_purchase`/`clk`/`kw_cat`)** 로 빼고 `LEFT JOIN` 하여 반복 스캔을 제거(N+1 해소).
+> - 우선순위(보관>니즈해결>시즌>고민>충동)는 정답 라벨과의 일치율을 최대화한 값(4.2 참조).
+
 ---
 
-### 1.3 검증 대상 유저 목록 — `SQL_ALL_STALE_USERS`
+### 1.3 검증용 유저 목록 — `SQL_ALL_STALE_USERS`
 
-**구조도**
-
-```
-cart_items  ─ WHERE days_in_cart >= :stale_days ─ DISTINCT user_id ─ ORDER BY user_id
-```
-
-**설명**
-- `validate_all()` 이 전체 방치 유저를 순회하며 분류 결과 vs `expected_bucket` 일치율을 집계할 때
-  쓰는 유저 목록 쿼리. 분류 자체는 1.2의 `SQL_STALE_CART` 가 수행한다.
-
-**쿼리**
+**무엇을 위한 기능?**
+분류 정확도를 검증(`validate_all()`)할 때, 방치 상품을 가진 **모든 유저**를 한 번에 뽑아 1.2
+분류 결과를 정답 라벨(`expected_bucket`)과 대조하는 데 쓴다. 추천 화면 자체에는 쓰이지 않는다.
 
 ```sql
 SELECT DISTINCT user_id
@@ -201,60 +186,39 @@ ORDER BY user_id;
 
 ---
 
-## 2. STEP3 추천
+## 2. STEP3 — 4가지 추천 알고리즘
 
-### 2.1 CF — 유사 고객 Gower 유사도
+> STEP3은 **서로 다른 관점의 추천 4종**을 카드로 제시한다. 각 카드는 독립 SQL이며, "왜 이
+> 상품을 추천하는가"의 근거가 다르다 → 비슷한 고객(CF) · 요즘 뜨는 성분(트렌드) · 내가 찾던 것
+> (검색) · 곧 떨어질 것(재구매).
 
-**구조도**
+### 2.1 유사 고객 추천 / Gower 유사도 — `SQL_CF_PRODUCTS`
+
+**무엇을 위한 기능?**
+**협업 필터링(CF)** — "나와 피부가 비슷한 고객들이 많이 산 상품"을 추천한다. 추천 카드에는
+"비슷한 고객 N명 중 M명이 구매" 같은 근거가 함께 표시된다.
+
+**어떻게 판단하나 (Gower 유사도)**
+두 사람이 얼마나 비슷한지를 두 가지 피부 속성으로 잰다.
+
+1. **피부 타입**(지성/건성 등) — 같아야만 후보로 인정(하드 필터).
+2. **피부 고민**(모공·여드름 …, `|` 로 여러 개) — **겹치는 고민이 많을수록** 더 비슷.
+
+겹치는 고민 수를 전체 고민 수로 나눠 **0~1 사이 유사도(Gower)** 로 환산하고, 겹치는 고민이
+있는 고객만 "유사 고객"으로 본다(겹치는 고객이 아무도 없으면 같은 피부 타입 전체로 폴백).
+그다음 유사 고객들이 산 상품을 **구매자 수 순**으로 모아, 내가 **이미 산 상품은 빼고** 추천한다.
 
 ```
-me            : 대상 유저의 skin_type, skin_concerns
-   │
-my_tokens     : skin_concerns('모공|여드름') → JSON_TABLE → 토큰 행 ["모공","여드름"]
-   │
-tok_count     : 전체 고민 수(분모) 1회 집계 ──┐ (CROSS JOIN 상수)
-   │                                          │
-peer_shared   : 같은 skin_type 후보 u 마다    │
-   │              shared = Σ FIND_IN_SET(…)   │  ← FIND_IN_SET 후보당 단 1회
-   ▼                                          │
-peer_sim      : gower = (1 + shared/total)/2 ◀┘   ← Gower 유사도(0~1), shared 재사용
-   │
-sim_stat      : MAX(shared) 단일 로우 ──┐ (CROSS JOIN 상수, 재스캔 제거)
-   ▼                                    │
-similar       : max_shared>0 이면 shared>0, 아니면 전체(폴백) ◀┘
-   │
-   ├─ SQL_CF_SIMILAR  : SELECT user_id  (peer_n 산출)
-   └─ SQL_CF_PRODUCTS : 유사고객 구매상품 집계(이미 산 상품 NOT EXISTS 제외)
-                         ORDER BY buyers DESC, price DESC, product_id ASC  LIMIT :limit
+1단계  나의 피부타입·고민 추출
+2단계  같은 피부타입 고객만 후보로
+3단계  후보별 "겹치는 고민 수" 계산 → Gower 유사도(0~1)
+4단계  겹치는 고민>0 인 고객 = 유사 고객 (없으면 같은 타입 전체)
+5단계  유사 고객 구매상품 집계 → 내가 안 산 것만 → 구매자 많은 순 추천
 ```
 
-**설명**
-- 문서 I 4.2는 `JSON_OVERLAPS(skin_concerns)` 로 유사 유저를 잡았다. CSV→MySQL 적재 시
-  `skin_concerns` 가 **`|` 구분 TEXT** 로 저장되어(JSON 타입 아님) `JSON_OVERLAPS` 를 쓸 수 없다.
-  그래서 **Gower 유사도 컨셉을 SQL로 직접 구현**했다.
-  - `skin_type` = 대칭형 범주 피처 → 같은 그룹만 후보(하드 필터).
-  - `skin_concerns` = 비대칭형 다중값 피처 → **공유 고민 수**로 부분 유사도.
-- 핵심은 **파이썬 split·교집합 루프와 동적 SQL 문자열 조립을 제거**하고 `JSON_TABLE` +
-  `FIND_IN_SET` 로 집합 연산을 SQL 안에서 끝낸 것이다. `gower` 컬럼까지 산출해 거리(1−유사도)
-  기반 정렬 확장도 가능하나, 현재 정책은 **공유 고민 > 0 하드필터**(없으면 전체 폴백)다.
-- **[성능 최적화]** Gower 공식·폴백 정책은 그대로 두고 실행 구조만 개선했다.
-  1. **`FIND_IN_SET` 중복 계산 제거**: 기존엔 `shared` 와 `gower` 식에서 같은 `FIND_IN_SET`
-     서브쿼리를 2번 돌렸다. `peer_shared` CTE 에서 **후보당 1회만** 계산하고 `peer_sim` 이
-     그 값을 재사용한다(CPU 약 1/2).
-  2. **분모·MAX 상수화(CROSS JOIN)**: 전체 고민 수(`tok_count`)와 폴백 판정용
-     `MAX(shared)`(`sim_stat`)를 **단일 로우 CTE** 로 분리해 `CROSS JOIN` 한다. 기존 `similar`
-     의 `WHERE (SELECT MAX(shared) FROM peer_sim)` 상관 서브쿼리가 행마다 `peer_sim` 전체를
-     재스캔하던 비용을 **1회 스캔**으로 줄였다.
-  3. **`NOT IN` → `NOT EXISTS`**: 이미 구매한 상품 제외를 `NOT EXISTS` 로 변경. `NOT IN` 은
-     서브쿼리에 `NULL` 이 섞이면 결과가 통째로 비는 위험이 있고 세미조인·인덱스 활용이
-     어렵다. `NOT EXISTS` 는 `(user_id, product_id)` 인덱스를 타고 첫 매칭에서 단락 평가된다.
-  4. **결정적 정렬**: `buyers`·`price` 동률 시 실행계획에 따라 `LIMIT` 경계 상품이 흔들리던
-     문제를 막기 위해 `ORDER BY buyers DESC, p.price DESC, p.product_id ASC` 로 **전순서(total
-     order)** 를 부여했다. 비즈니스 정렬 의미(buyers→price)는 동일하고 동률만 결정적으로 해소한다.
-- **collation 주의**: `JSON_TABLE` 산출 토큰은 `utf8mb4_0900_ai_ci`, 컬럼은
-  `utf8mb4_unicode_ci` 라 `FIND_IN_SET` 에서 *Illegal mix of collations* 가 난다.
-  토큰 쪽에 `COLLATE utf8mb4_unicode_ci` 를 명시해 해결했다.
-- 구매율(`구매율 N%`)은 `buyers / peer_n` 으로, 파이썬에서 **표시용 반올림만** 한다.
+> **왜 Gower인가?** 원래 설계(문서 I)는 `JSON_OVERLAPS` 로 고민 겹침을 봤지만, 실제 데이터의
+> `skin_concerns` 는 `모공|여드름` 같은 **텍스트**라 JSON 함수를 못 쓴다. 그래서 피부타입(범주형)
+> 과 고민(다중값)을 함께 다루는 **Gower 유사도** 개념을 SQL로 직접 구현했다.
 
 **쿼리**
 
@@ -321,38 +285,37 @@ ORDER BY buyers DESC, p.price DESC, p.product_id ASC
 LIMIT :limit;
 ```
 
+> ⚙️ **구현 메모**
+> - 파이썬의 split·교집합 루프와 동적 SQL 조립을 없애고 `JSON_TABLE`+`FIND_IN_SET` 으로 집합
+>   연산을 SQL 안에서 끝냈다.
+> - 성능: 겹치는 고민 수(`FIND_IN_SET`)를 **후보당 1번만** 계산해 재사용하고, 분모·`MAX(shared)`
+>   를 단일 로우 CTE로 만들어 `CROSS JOIN`(상수화) → 반복 재스캔 제거. 이미 산 상품 제외는
+>   `NOT EXISTS`(NULL 안전·인덱스 활용). 동률 시 순서가 흔들리지 않도록 `product_id ASC` 로
+>   결정적 정렬(비즈니스 우선순위 buyers→price는 동일).
+> - `JSON_TABLE` 토큰엔 `COLLATE utf8mb4_unicode_ci` 를 붙여 collation 충돌을 막는다.
+
 ---
 
-### 2.2 트렌드 기반 — `SQL_TREND_PRODUCTS`
+### 2.2 트렌드 성분 추천 — `SQL_TREND_PRODUCTS`
 
-**구조도**
+**무엇을 위한 기능?**
+**요즘 뜨는 성분**(검색·관심이 급상승한 성분)이 들어간 상품을 추천한다. "지금 화제인 성분
+○○ 함유" 같은 트렌드 카드를 만든다.
+
+**어떻게 판단하나**
+이번 달 기준으로 인기 상승폭(`trend_delta`)이 큰 **상위 8개 성분**을 고르고, 그 성분이 든
+상품을 찾아, 성분별로 **구매 전환율이 높은 상품 2개씩**을 뽑는다. 같은 상품이 여러 성분에
+걸리면 한 번만 노출한다. 최종 정렬은 **성분 인기 순 → 전환율 순**.
 
 ```
-SQL_LATEST_MONTH : MAX(month)  → :month
-   ▼
-rising    : month=:month AND trend_delta>0,  ROW_NUMBER() ORDER BY trend_delta DESC = ing_rank
-top_ing   : ing_rank<=8  ← LIKE 조인 '전에' 상위 8개 성분으로 모수 선축소(핵심 최적화)
-conv      : 상품별 MAX(conversion_rate)
-cand      : top_ing  JOIN  products(key_ingredients LIKE %성분%)  LEFT JOIN conv
-            └ ROW_NUMBER() PARTITION BY 성분 ORDER BY conv DESC = conv_rank
-top2      : conv_rank <= 2  (성분별 전환율 상위 2)
-first_occ : ROW_NUMBER() PARTITION BY product_id ORDER BY ing_rank,conv_rank = occ  → occ=1 만(중복 제거)
-   ▼
-ORDER BY ing_rank, conv_rank  LIMIT :limit
+1단계  이번 달 상승 성분 중 trend_delta 큰 순 → 상위 8개 성분
+2단계  그 성분이 든 상품 찾기 (성분명이 상품 성분목록에 포함)
+3단계  성분별 전환율 높은 상품 2개씩
+4단계  중복 상품 1번만 → 성분인기·전환율 순 추천
 ```
 
-**설명**
-- 문서 I에는 트렌드 전용 쿼리가 없다(STEP3는 4.1 검색·4.2 CF만 기술). 기획서 5.2의 트렌드
-  컨셉(`ingredient_trends` 상승 성분 × `search_purchase_pattern` 전환율)을 구현한 항목이다.
-- 초기 구현은 **성분 8개를 파이썬 for 루프로 돌며 성분당 쿼리 + `seen` set 중복 제거**였다.
-  이를 **윈도우 함수(`ROW_NUMBER`) 단일 쿼리**로 합쳐, 성분순위(`ing_rank`)·전환순위(`conv_rank`)·
-  상품 중복 제거(`first_occ`)를 SQL이 처리한다. 최종 정렬 `(ing_rank, conv_rank)` 이 기존 파이썬
-  삽입 순서와 동일해 **결과가 보존**된다.
-- **[성능 최적화]** 초기 SQL은 `rising`(모든 상승 성분) × `products` 를 `LIKE '%성분%'` 로 먼저
-  **풀스캔 조인**한 뒤 `WHERE ing_rank<=8` 로 잘라내, 버려질 성분까지 LIKE 조인·`PARTITION`
-  정렬(`ROW_NUMBER`)을 수행했다. **`top_ing` CTE 로 상위 8개 성분을 LIKE 조인 전에 먼저
-  추출**해, 가장 무거운 LIKE 조인과 윈도우 정렬의 입력 카디널리티를 줄였다(필터 푸시다운).
-  성분 순위·전환 순위·중복 제거 규칙은 동일하므로 **결과는 변하지 않는다**.
+> **데이터 출처:** `ingredient_trends`(성분 인기 추이) + `search_purchase_pattern`(전환율).
+> 기획서 5.2의 트렌드 컨셉을 구현한 것으로, 문서 I에는 없던 STEP3 신규 추천이다.
 
 **쿼리**
 
@@ -402,31 +365,34 @@ ORDER BY ing_rank, conv_rank
 LIMIT :limit;
 ```
 
+> ⚙️ **구현 메모**
+> - 성분별 루프 + 파이썬 중복 제거를 윈도우 함수(`ROW_NUMBER`) **단일 쿼리**로 합쳤다(성분순위·
+>   전환순위·상품 중복 제거 모두 SQL).
+> - 성능: 무거운 `LIKE` 조인 **전에** `top_ing` 으로 상위 8개 성분을 먼저 추려 입력을 줄였다
+>   (필터 푸시다운). 순위·중복 제거 규칙은 그대로라 결과는 동일.
+
 ---
 
-### 2.3 검색 의도 기반 — `SQL_SEARCH_INTENT`
+### 2.3 검색 의도 추천 — `SQL_SEARCH_INTENT`
 
-**구조도**
+**무엇을 위한 기능?**
+사용자가 **최근 검색한 키워드**를 근거로, 그 키워드에서 실제 구매로 잘 이어진(전환율 높은)
+상품을 추천한다. "최근 '수분크림' 을 찾으셨네요" 류의 카드를 만든다.
+
+**어떻게 판단하나**
+최근 검색어 5개를 뽑고, "OO 추천" 처럼 붙은 군더더기 접미사를 떼어 **키워드를 정규화**한다.
+그 키워드로 `search_purchase_pattern`(검색→구매 전환 데이터)을 조회해 **전환율 높은 순**으로
+상품을 추천한다.
 
 ```
-recent : 유저 최근 검색어 GROUP BY keyword, ORDER BY MAX(searched_at) DESC LIMIT 5
-   ▼
-norm   : recent.keyword            (원문)
-         UNION
-         TRIM(REPLACE(keyword,' 추천',''))   ("OO 추천" → "OO")
-   ▼
-search_purchase_pattern spp  JOIN products p
-   WHERE spp.search_keyword IN (norm)
-   ORDER BY spp.conversion_rate DESC  LIMIT :limit
+1단계  최근 검색어 5개 (최신순)
+2단계  키워드 정규화: 원문 + "OO 추천"→"OO"
+3단계  그 키워드의 전환율 높은 상품 순으로 추천
 ```
 
-**설명**
-- 문서 I 4.1은 `LIKE CONCAT('%', keyword, '%')` 부분일치 + `relevance_score` 가중합 +
-  `JSON_OVERLAPS(concern_target)` 필터를 썼다. 파일럿은 **정확일치(`IN`) + `conversion_rate`
-  정렬**로 단순화했고(데모 데이터 규모·`concern_target` JSON 부재), 키워드 정규화("OO 추천"의
-  접미사 제거)를 파이썬 set에서 **`UNION` + `TRIM(REPLACE())` CTE** 로 옮겼다.
-- `SQL_RECENT_KEYWORDS` 는 "최근 검색어가 하나라도 있는지" 확인(빈 결과 시 early-return)과
-  표시용 대표 키워드 추출에만 쓰고, 실제 매칭은 `SQL_SEARCH_INTENT` 한 문장이 담당한다.
+> **왜 단순화했나?** 문서 I은 부분일치(`LIKE`)+가중치 점수를 썼지만, 데모 데이터엔 점수용
+> `concern_target` JSON이 없어 **정확일치(`IN`) + 전환율 정렬**로 간결화했다. 키워드 정규화는
+> 파이썬에서 SQL(`UNION`+`TRIM(REPLACE())`)로 옮겨 한 문장 안에서 처리한다.
 
 **쿼리**
 
@@ -464,23 +430,22 @@ LIMIT   :limit;
 
 ---
 
-### 2.4 소진/재구매 — `SQL_REPURCHASE`
+### 2.4 소진·재구매 리마인드 — `SQL_REPURCHASE`
 
-**구조도**
+**무엇을 위한 기능?**
+**반복 구매하던 상품의 재구매 타이밍**을 알린다. "전에 ○번 사셨던 △△, 슬슬 떨어질 때예요"
+같은 리마인드 카드를 만든다.
+
+**어떻게 판단하나**
+같은 상품을 **N회 이상 반복 구매**한 이력을 모아, 구매 횟수가 많고 최근 구매일이 가까운 순으로
+추천한다. 카테고리의 평균 소진 주기(`avg_lifespan_days`)도 함께 배지로 보여준다.
 
 ```
-purchase_history ph  JOIN products p  JOIN categories cat
-   WHERE ph.user_id = :user_id
-   GROUP BY product …
-   HAVING COUNT(*) >= :repeat_min          ← 반복 구매 N회 이상(보관 버킷 기준)
-   ORDER BY times DESC, last_at DESC  LIMIT :limit
+반복 구매 N회 이상 상품 → 구매 많은 순 · 최근 구매 순 → 재구매 추천
 ```
 
-**설명**
-- 문서 I 5장 "소진 주기 계산"의 컨셉(반복 구매 + 카테고리 소진 주기)을 STEP3 카드용으로 단순화.
-- 문서 I은 `volume_ml / daily_usage_ml` 정밀 소진일·D-7 필터까지 계산하지만, 파일럿 카드는
-  **반복 구매 횟수(`times`)와 `avg_lifespan_days`(소진 주기)** 만 배지로 노출하므로 그 수준까지만
-  집계한다(정밀 소진일은 향후 확장 여지).
+> **간소화 이유:** 문서 I은 `용량 ÷ 일일사용량` 으로 정밀 소진일(D-7)까지 계산하지만, 파일럿
+> 카드는 **반복 횟수 + 평균 소진 주기**만 노출하므로 그 수준까지만 집계한다(정밀 소진일은 확장 여지).
 
 **쿼리**
 
@@ -501,11 +466,11 @@ LIMIT   :limit;
 
 ---
 
-## 3. 인덱스 설계
+## 3. 인덱스 설계 — 빠른 응답을 위한 준비
 
-조회 패턴을 가속하기 위해 [upload_to_mysql.py](../upload_to_mysql.py) 의 `create_indexes()` 가
-테이블 적재 후 아래 인덱스를 생성한다(`information_schema` 로 존재 확인 후 생성 — MySQL은
-`CREATE INDEX IF NOT EXISTS` 미지원).
+위 쿼리들이 자주 거치는 **조회 경로**(유저별 장바구니·구매·검색, 성분·전환율 조인)를 빠르게
+하려고, [upload_to_mysql.py](../upload_to_mysql.py) 의 `create_indexes()` 가 데이터 적재 직후
+아래 인덱스를 만든다(이미 있으면 건너뜀 — MySQL은 `CREATE INDEX IF NOT EXISTS` 미지원).
 
 ```sql
 -- cart_items  (idx_cart_user 는 ORDER BY days_in_cart DESC 를 그대로 타도록 내림차순 인덱스)
@@ -527,16 +492,16 @@ CREATE INDEX idx_trend_month          ON ingredient_trends(month, trend_delta);
 CREATE INDEX idx_trend_ing_month      ON ingredient_trends(ingredient, month);
 ```
 
-> 문서 I 6장 대비 추가분: `idx_sh_user_clicked`(클릭 신호 EXISTS), `idx_spp_product`(상품 조인),
+> 문서 I 6장 대비 추가분: `idx_sh_user_clicked`(클릭 신호), `idx_spp_product`(상품 조인),
 > `idx_prod_category`(카테고리 조인), `idx_trend_month`(상승 성분 조회). 나머지는 문서 I과 동일.
-> **[성능 최적화]** `idx_cart_user` 는 MySQL 8.0+ 의 **내림차순 인덱스(Descending Index)** 문법
-> `(user_id, days_in_cart DESC)` 으로 생성한다. `SQL_STALE_CART` 의 `ORDER BY days_in_cart DESC`
-> 를 인덱스 순서 그대로 읽어 **filesort 를 제거**한다(MySQL 8.0 미만에서는 `DESC` 키워드가
-> 무시되어 오름차순으로 생성되지만, 본 시스템 기준 엔진은 9.4 이므로 정상 적용).
+>
+> ⚙️ **구현 메모** — `idx_cart_user` 는 `(user_id, days_in_cart DESC)` **내림차순 인덱스**(MySQL
+> 8.0+)다. 1.2의 `ORDER BY days_in_cart DESC` 를 인덱스 순서대로 바로 읽어 별도 정렬(filesort)을
+> 없앤다.
 
 ---
 
-## 4. 문서 I 대비 변경사항 · 변경사유
+## 4. 문서 I 대비 무엇을·왜 바꿨나
 
 > 모든 변경은 **알고리즘 컨셉을 유지**하되, ① 데모 데이터(CSV→MySQL) 스키마 현실, ②
 > `expected_bucket` 정답값과의 일치율, ③ pymysql/MySQL 엔진 제약 때문에 불가피했던 것이다.

@@ -83,6 +83,8 @@ CATEGORY_IMAGE_QUERY = {
 # 현재 계절은 기본적으로 SQL 에서 MONTH(NOW()) 로 동적 판정한다(SQL문서 2.6 season_now).
 # 빈 값("")이면 동적 판정, 특정 계절(spring/summer/fall/winter)을 넣으면 그 값으로 고정
 # (데모·테스트에서 특정 시즌 결과를 재현할 때만 override 로 사용).
+# ※ data/cart_items.csv 의 expected_bucket 정답 라벨은 **현재 시즌(summer) 기준**으로
+#   재라벨되어 있어, 동적 판정(6월=summer)과 시즌 버킷(충동↔클렌징_시즌)이 일치한다.
 CURRENT_SEASON = os.environ.get("CURRENT_SEASON", "")
 
 # 방치 감지 기준: cart_items.days_in_cart >= STALE_DAYS  (정책서 분기1)
