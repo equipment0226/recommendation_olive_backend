@@ -25,8 +25,6 @@ TYPE_OVERRIDES: dict[str, dict[str, str]] = {
         "days_in_cart": "INT",
         "referrer": "VARCHAR(50)",
         "quantity": "INT",
-        "expected_bucket": "VARCHAR(30)",
-        "expected_reason": "TEXT",
     },
     "categories": {
         "category_id": "VARCHAR(20)",

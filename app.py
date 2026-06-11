@@ -17,7 +17,7 @@ from flask_cors import CORS
 from werkzeug.exceptions import HTTPException
 
 import config
-from recommendation.bucket import get_cart_analysis, validate_all
+from recommendation.bucket import get_cart_analysis, bucket_distribution
 from recommendation.db import get_db
 from recommendation.recommender import (
     ALL_RECOMMENDERS,
@@ -88,10 +88,10 @@ def api_recommend_one(user_id: str, algo: str):
     return jsonify(fn(user_id))
 
 
-@app.get("/api/validate")
-def api_validate():
-    """전체 분류 결과 vs cart_items.expected_bucket 검증(일치율)."""
-    return jsonify(validate_all())
+@app.get("/api/distribution")
+def api_distribution():
+    """전체 방치 장바구니를 SQL CASE 로 실시간 분류한 버킷 분포."""
+    return jsonify(bucket_distribution())
 
 
 # ── Pexels 샘플 이미지 ────────────────────────────────────────────────

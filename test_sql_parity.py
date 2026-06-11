@@ -55,7 +55,7 @@ def _empty(algo: str) -> dict:
 # ── 버킷 분류 (old) ──────────────────────────────────────────────────
 OLD_SQL_STALE_CART = """
 SELECT  c.cart_id, c.user_id, c.product_id, c.added_at, c.days_in_cart,
-        c.referrer, c.quantity, c.expected_bucket,
+        c.referrer, c.quantity,
         p.product_name, p.brand, p.category_id, p.key_ingredients,
         p.suitable_season, p.texture, p.volume_ml, p.volume_unit, p.price,
         cat.category_name, cat.avg_lifespan_days

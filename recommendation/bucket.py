@@ -2,14 +2,18 @@
 
 상품(cart row) 단위로 판별하며, 우선순위 결정트리를 **SQL 한 문장**으로 수행한다.
 다중 조건 교차 판정(반복구매·니즈해결·시즌·관심신호)을 모두 CASE/EXISTS 로 옮겨
-파이썬 분류 로직을 제거했다. expected_bucket 컬럼과 대조해 검증할 수 있다.
+파이썬 분류 로직을 제거했다. 별도 정답 라벨(expected_bucket) 없이, 조회 시점에
+SQL CASE 로 실시간 판별한 값 자체가 정답이다.
 
-결정트리(검증 일치율 96%):
+결정트리:
   1) 동일상품 반복구매 N회+ → '보관'
   2) 담은 후 동일 카테고리 구매 → '클렌징_니즈해결'
   3) 시즌 미스매치 → 관심신호(클릭) 있으면 '고민' else '클렌징_시즌'
-  4) 관심신호(클릭 or 카테고리 검색) → '고민'
+  4) 관심신호(클릭 or 카테고리 검색) + 배너/SNS 유입 아님 → '고민'
   5) 그 외 → '충동'
+
+관심신호(클릭)는 45일 Decay(마지막 검색 45일 이내)만 유효하며, 배너/SNS(event_banner/
+sns_ad) 유입은 관심신호가 있어도 충동으로 본다(기획서 v0.3 충동/고민 정의).
 """
 from __future__ import annotations
 
@@ -74,9 +78,12 @@ cat_purchase AS (
 ),
 clk AS (
     -- 클릭(product_clicked)한 상품 집합: EXISTS 대체용 distinct 키
+    -- 45일 Decay: 마지막 관심신호로부터 45일 이내 클릭만 유효(기획서: 관심신호 45일 이내).
+    -- 오래된 클릭 이력이 지금까지 '고민'으로 잡히는 것을 막는다.
     SELECT DISTINCT product_clicked AS product_id
     FROM   search_history
     WHERE  user_id = :user_id AND product_clicked IS NOT NULL
+      AND  searched_at >= DATE_SUB(NOW(), INTERVAL 45 DAY)
 ),
 kw_cat AS (
     -- 검색어가 카테고리명을 포함하는 카테고리: LIKE 조인을 사용자 검색어 집합 ×
@@ -88,7 +95,7 @@ kw_cat AS (
     WHERE  sh.user_id = :user_id
 )
 SELECT  c.cart_id, c.user_id, c.product_id, c.added_at, c.days_in_cart,
-        c.referrer, c.quantity, c.expected_bucket,
+        c.referrer, c.quantity,
         p.product_name, p.brand, p.category_id, p.key_ingredients,
         p.suitable_season, p.texture, p.volume_ml, p.volume_unit, p.price,
         cat.category_name, cat.avg_lifespan_days,
@@ -107,7 +114,10 @@ SELECT  c.cart_id, c.user_id, c.product_id, c.added_at, c.days_in_cart,
                         ELSE '클렌징_시즌'
                      END
             -- 4) 관심신호(클릭 OR 카테고리명 검색) → 고민
-            WHEN clk.product_id IS NOT NULL OR kw_cat.category_id IS NOT NULL
+            --    단, 배너/SNS 유입(event_banner/sns_ad)은 관심신호가 있어도 충동으로 본다
+            --    (기획서: 충동 = 이벤트/SNS 유입 + 검색 이력 없음)
+            WHEN (clk.product_id IS NOT NULL OR kw_cat.category_id IS NOT NULL)
+                 AND c.referrer NOT IN ('event_banner', 'sns_ad')
                 THEN '고민'
             -- 5) 그 외 → 충동
             ELSE '충동'
@@ -195,9 +205,6 @@ def get_cart_analysis(user_id: str) -> dict:
             "type": meta["type"],
             "default_checked": meta["default_checked"],
             "reason": _build_reason(bucket, row),
-            # 검증용: 정답값
-            "expected_bucket": row["expected_bucket"],
-            "match": bucket == row["expected_bucket"],
         })
 
     cleansing = [i for i in items if i["group"] == "cleansing"]
@@ -225,7 +232,8 @@ def get_cart_analysis(user_id: str) -> dict:
     }
 
 
-# ── 검증: 전체 cart_items 의 분류 결과 vs expected_bucket ──────────────
+# ── 버킷 분포: 전체 cart_items 를 SQL CASE 로 실시간 분류해 집계 ──────────
+# 별도 정답 라벨 없이 CASE 판별 결과 자체가 정답이다.
 SQL_ALL_STALE_USERS = """
 SELECT DISTINCT user_id
 FROM   cart_items
@@ -234,8 +242,8 @@ ORDER BY user_id
 """
 
 
-def validate_all() -> dict:
-    """전체 장바구니를 분류해 expected_bucket 과의 일치율을 계산한다."""
+def bucket_distribution() -> dict:
+    """전체 방치 장바구니를 SQL CASE 로 실시간 분류해 버킷별 분포를 집계한다."""
     db = get_db()
     user_ids = [
         r["user_id"]
@@ -243,42 +251,32 @@ def validate_all() -> dict:
     ]
 
     total = 0
-    correct = 0
     by_bucket: dict[str, dict] = {}
-    confusion: dict[str, dict[str, int]] = {}
-    mismatches = []
 
     for uid in user_ids:
         analysis = get_cart_analysis(uid)
         for item in analysis["cleansing_items"] + analysis["keep_items"]:
-            exp = item["expected_bucket"]
-            got = item["bucket"]
+            bucket = item["bucket"]
             total += 1
-            stat = by_bucket.setdefault(exp, {"total": 0, "correct": 0})
-            stat["total"] += 1
-            confusion.setdefault(exp, {})
-            confusion[exp][got] = confusion[exp].get(got, 0) + 1
-            if item["match"]:
-                correct += 1
-                stat["correct"] += 1
-            else:
-                mismatches.append({
-                    "user_id": uid,
-                    "product_id": item["product_id"],
-                    "product_name": item["product_name"],
-                    "expected": exp,
-                    "predicted": got,
-                })
+            stat = by_bucket.setdefault(
+                bucket,
+                {"count": 0, "group": item["group"], "type": item["type"]},
+            )
+            stat["count"] += 1
 
-    rate = round(100 * correct / total, 1) if total else 0.0
-    for b in by_bucket.values():
-        b["rate"] = round(100 * b["correct"] / b["total"], 1) if b["total"] else 0.0
+    cleansing_total = sum(
+        s["count"] for s in by_bucket.values() if s["group"] == "cleansing"
+    )
+    keep_total = sum(
+        s["count"] for s in by_bucket.values() if s["group"] == "keep"
+    )
+    for s in by_bucket.values():
+        s["ratio"] = round(100 * s["count"] / total, 1) if total else 0.0
 
     return {
         "total": total,
-        "correct": correct,
-        "match_rate": rate,
+        "users": len(user_ids),
+        "cleansing_total": cleansing_total,
+        "keep_total": keep_total,
         "by_bucket": by_bucket,
-        "confusion": confusion,
-        "mismatches": mismatches,
     }
